@@ -4,28 +4,16 @@ from typing import Literal
 from io import BytesIO
 
 import streamlit as st
-from dotenv import load_dotenv
 from openai import OpenAI
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 MODEL_NAME = "gpt-4.1-mini"
 
-# Load .env for local usage
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except:
-    pass
-
-# Prefer Streamlit secrets in the cloud, fall back to local env
 api_key = None
-
-# Try Streamlit secrets (works on Streamlit Cloud, but may fail locally)
 try:
     api_key = st.secrets["OPENAI_API_KEY"]
-except Exception:
-    # If that fails (e.g., running locally), use environment variable / .env
+except:
     api_key = os.getenv("OPENAI_API_KEY")
 
 if not api_key:
@@ -399,4 +387,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
