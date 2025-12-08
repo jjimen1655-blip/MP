@@ -128,6 +128,10 @@ def build_mealplan_prompt(
     diet_pattern: str,
     fluid_limit_l,
     fast_food_chains,
+    fast_food_percent: int,
+    big_meals_per_day: int,
+    snacks_per_day: int,
+    prep_style: str,
 ):
     # Language instructions for the model
     if language == "Spanish":
@@ -144,7 +148,7 @@ def build_mealplan_prompt(
     # Clinical diet instructions
     clinical_note = ""
     if diet_pattern == "Cardiac (CHF / low sodium)":
-        limit_txt = f"{fluid_limit_l:.1f} L/day" if fluid_limit_l else "about 1.5–2.0 L/day"
+        limit_txt = f"{fluid_limit_l:.1f} L/day" if fluid_limit_l else "1.5–2.0 L/day"
         clinical_note = f"""
 CLINICAL DIET PATTERN: Cardiac diet for CHF with reduced ejection fraction.
 - Sodium goal: generally < 2,000 mg/day.
@@ -174,14 +178,43 @@ CLINICAL DIET PATTERN: Renal diet for ESRD or CKD stage 4–5 (general guidance,
 
     # Fast-food instructions
     fast_food_note = ""
-    if fast_food_chains:
+    if fast_food_chains and fast_food_percent > 0:
         chains_txt = ", ".join(fast_food_chains)
         fast_food_note = f"""
-FAST-FOOD OPTIONS:
+FAST-FOOD / TAKEOUT PATTERN:
 - Patient is okay with using some meals from these fast-food chains: {chains_txt}.
-- You may replace up to 3–5 meals per week with fast-food items from those chains.
+- Aim for roughly {fast_food_percent}% of total weekly meals to be from fast-food or takeout.
+- Not every day has to include fast-food; spread it across the week in a realistic way.
 - For each fast-food meal, specify the restaurant, item name, and approximate calories, protein, carbs, fat, and sodium.
 - Choose options that best fit the macro targets and any clinical diet constraints above.
+"""
+
+    # Meal timing note
+    meal_timing_note = f"""
+MEAL TIMING PREFERENCES:
+- Target {big_meals_per_day} main meal(s) and {snacks_per_day} snack time(s) per day.
+- Main meals should contain the majority of daily calories and protein.
+- Snacks should be lighter and help fill in remaining macros without overshooting daily targets.
+"""
+
+    # Cooking vs premade
+    if prep_style == "Mostly premade / ready-to-eat from store":
+        prep_note = """
+COOKING VS PREMADE:
+- Prioritize ready-to-eat or minimal-prep items (rotisserie chicken, pre-cooked grains, frozen vegetables, bagged salads, pre-made soups, etc.).
+- Avoid complicated recipes; most meals should be assembly or reheat rather than full scratch cooking.
+"""
+    elif prep_style == "Mostly home-cooked meals":
+        prep_note = """
+COOKING VS PREMADE:
+- Emphasize simple home-cooked meals using basic ingredients.
+- Occasional premade or frozen items are okay, but most meals should involve basic cooking (stovetop, oven, or air fryer).
+"""
+    else:  # Balanced mix
+        prep_note = """
+COOKING VS PREMADE:
+- Use a balanced mix of home-cooked meals, ready-to-eat items, and occasional fast-food or takeout.
+- Reuse ingredients across cooked and premade meals to save time and reduce waste.
 """
 
     # Pricing instructions
@@ -215,11 +248,19 @@ PATIENT CONSTRAINTS:
 
 {fast_food_note}
 
+{meal_timing_note}
+
+{prep_note}
+
 {pricing_note}
 
 MEAL PLAN TASK:
-Create a 7-day meal plan (breakfast, lunch, dinner, and 1–2 snacks per day)
-for a single adult based on the macro targets and constraints above.
+Create a 7-day meal plan for a single adult based on the macro targets and constraints above.
+
+STRUCTURE:
+- For each day, include exactly {big_meals_per_day} main meal(s) and {snacks_per_day} snack time(s).
+- Label them clearly (for example: Breakfast, Lunch, Dinner, Snack 1, Snack 2).
+- Distribute calories and macros so that totals for the day roughly match the macro targets.
 
 Additional requirements:
 - Keep recipes simple and realistic for a busy person.
@@ -231,12 +272,12 @@ Additional requirements:
 OUTPUT FORMAT (plain text, no markdown tables):
 
 Day 1
-- Breakfast: ...
+- Main meal 1: ...
   Approx: X kcal, P: Y g, C: Z g, F: W g
-- Snack: ...
-- Lunch: ...
-- Snack: ...
-- Dinner: ...
+- Snack 1: ...
+- Main meal 2: ...
+- Snack 2: ...
+(Adjust labels and counts to match the number of main meals and snacks requested.)
 
 Repeat for Days 1–7.
 
@@ -254,7 +295,6 @@ At the end, include:
    For each item, include approximate unit price and line total.
 """
 
-
 def generate_meal_plan_with_ai(
     macros: MacroResult,
     allergies: str,
@@ -265,6 +305,10 @@ def generate_meal_plan_with_ai(
     diet_pattern: str,
     fluid_limit_l,
     fast_food_chains,
+    fast_food_percent: int,
+    big_meals_per_day: int,
+    snacks_per_day: int,
+    prep_style: str,
 ) -> str:
     prompt = build_mealplan_prompt(
         macros=macros,
@@ -276,6 +320,10 @@ def generate_meal_plan_with_ai(
         diet_pattern=diet_pattern,
         fluid_limit_l=fluid_limit_l,
         fast_food_chains=fast_food_chains,
+        fast_food_percent=fast_food_percent,
+        big_meals_per_day=big_meals_per_day,
+        snacks_per_day=snacks_per_day,
+        prep_style=prep_style,
     )
 
     completion = client.chat.completions.create(
@@ -290,7 +338,6 @@ def generate_meal_plan_with_ai(
     )
 
     return completion.choices[0].message.content
-
 
 # ---------- PDF GENERATION ----------
 
@@ -533,6 +580,48 @@ def main():
             help="The AI can substitute some meals with items from these places."
         )
 
+    # % of meals that can be fast-food
+    fast_food_percent = 0
+    if include_fast_food:
+        fast_food_percent = st.slider(
+            "About what % of weekly meals can be fast-food / takeout?",
+            min_value=10,
+            max_value=80,
+            step=10,
+            value=20,
+            help="This is a rough target; the plan will approximate this share of meals."
+        )
+
+    # 7. Meal timing
+    st.subheader("7. Meal timing (optional)")
+
+    big_meals_per_day = st.selectbox(
+        "Number of main meals per day",
+        options=[1, 2, 3],
+        index=2,
+        help="For example, choose 2 if they prefer something like brunch + dinner."
+    )
+
+    snacks_per_day = st.selectbox(
+        "Number of snack times per day",
+        options=[0, 1, 2, 3],
+        index=2,
+        help="Snacks will be lighter and used to fill in remaining macros."
+    )
+
+    # 8. Cooking vs premade balance
+    st.subheader("8. Cooking vs premade balance")
+
+    prep_style = st.selectbox(
+        "Preferred style",
+        options=[
+            "Balanced: mix of cooking and premade",
+            "Mostly premade / ready-to-eat from store",
+            "Mostly home-cooked meals",
+        ],
+        help="Guides how many meals rely on cooking vs ready-to-eat store items."
+    )
+
     # Single button instead of form submit
     submitted = st.button("Calculate macros and generate meal plan")
 
@@ -579,6 +668,10 @@ def main():
                     diet_pattern=diet_pattern,
                     fluid_limit_l=fluid_limit_l,
                     fast_food_chains=fast_food_chains,
+                    fast_food_percent=fast_food_percent,
+                    big_meals_per_day=big_meals_per_day,
+                    snacks_per_day=snacks_per_day,
+                    prep_style=prep_style,
                 )
                 # Save to session state so it persists across reruns
                 st.session_state["plan_text"] = plan_text
@@ -606,7 +699,6 @@ def main():
             mime="application/pdf",
         )
 
-if __name__ == "__main__":
-    main()
+
 
 
