@@ -353,190 +353,187 @@ def main():
     st.title("Evidence-Based BMR, Macros & AI Meal Planner")
     st.write("Prototype app using your macro logic plus an AI-generated 7-day meal plan.")
 
-    with st.form("inputs"):
-        st.subheader("1. Patient / User Info")
+    # 1. Patient / User Info
+    st.subheader("1. Patient / User Info")
 
-        col1, col2 = st.columns(2)
-        with col1:
-            sex = st.selectbox("Sex", options=["M", "F"])
-            age = st.number_input("Age (years)", min_value=12, max_value=100, value=30)
-            height_cm = st.number_input("Height (cm)", min_value=120.0, max_value=230.0, value=170.0)
-        with col2:
-            weight_current_kg = st.number_input("Current weight (kg)", min_value=30.0, max_value=300.0, value=70.0)
-            weight_goal_kg = st.number_input("Goal weight (kg)", min_value=30.0, max_value=300.0, value=65.0)
-            weight_source = st.selectbox("Weight used for macros", options=["Current", "Goal"])
+    col1, col2 = st.columns(2)
+    with col1:
+        sex = st.selectbox("Sex", options=["M", "F"])
+        age = st.number_input("Age (years)", min_value=12, max_value=100, value=30)
+        height_cm = st.number_input("Height (cm)", min_value=120.0, max_value=230.0, value=170.0)
+    with col2:
+        weight_current_kg = st.number_input("Current weight (kg)", min_value=30.0, max_value=300.0, value=70.0)
+        weight_goal_kg = st.number_input("Goal weight (kg)", min_value=30.0, max_value=300.0, value=65.0)
+        weight_source = st.selectbox("Weight used for macros", options=["Current", "Goal"])
 
-        st.subheader("2. Activity & Weight-Loss Settings")
-        activity_factor = st.number_input(
-            "Activity factor",
-            min_value=1.1,
+    # 2. Activity & Weight-Loss Settings
+    st.subheader("2. Activity & Weight-Loss Settings")
+    activity_factor = st.number_input(
+        "Activity factor",
+        min_value=1.1,
+        max_value=2.5,
+        value=1.375,
+        step=0.025,
+        help="Typical: 1.2 sedentary, 1.375 light, 1.55 moderate, 1.725 very active."
+    )
+
+    intensity = st.selectbox(
+        "Weight-loss intensity",
+        options=["Gentle", "Moderate", "Aggressive"],
+        help="Gentle ≈250 kcal/day deficit, Moderate ≈500, Aggressive ≈750."
+    )
+
+    # 3. Macro Settings
+    st.subheader("3. Macro Settings (g/kg)")
+    col3, col4 = st.columns(2)
+    with col3:
+        protein_g_per_kg = st.number_input(
+            "Protein (g/kg for macro weight)",
+            min_value=0.8,
             max_value=2.5,
-            value=1.375,
-            step=0.025,
-            help="Typical: 1.2 sedentary, 1.375 light, 1.55 moderate, 1.725 very active."
+            value=1.4,
+            step=0.1,
+            help="Evidence-supported weight loss range: 1.2–1.6 g/kg."
+        )
+    with col4:
+        fat_g_per_kg = st.number_input(
+            "Fat (g/kg for macro weight)",
+            min_value=0.3,
+            max_value=1.5,
+            value=0.7,
+            step=0.1,
+            help="Common clinical range: 0.5–1.0 g/kg."
         )
 
-        intensity = st.selectbox(
-            "Weight-loss intensity",
-            options=["Gentle", "Moderate", "Aggressive"],
-            help="Gentle ≈250 kcal/day deficit, Moderate ≈500, Aggressive ≈750."
+    # 4. Preferences
+    st.subheader("4. Preferences for AI Meal Plan")
+
+    allergies = st.text_input("Allergies (comma-separated)", placeholder="e.g., peanuts, shellfish")
+    dislikes = st.text_input("Foods to avoid / dislikes", placeholder="e.g., mushrooms, cilantro")
+    preferred_store = st.text_input("Preferred market/store", placeholder="e.g., H-E-B, Costco, Walmart")
+    weekly_budget = st.number_input(
+        "Weekly grocery budget (USD)",
+        min_value=10.0,
+        max_value=1000.0,
+        value=120.0,
+        step=10.0,
+    )
+
+    language = st.selectbox(
+        "Meal plan language",
+        options=["English", "Spanish"],
+        help="Choose the language for the generated meal plan."
+    )
+
+    # 5. Clinical diet pattern
+    st.subheader("5. Clinical diet pattern (optional)")
+
+    diet_pattern = st.selectbox(
+        "Apply a medical diet template",
+        options=[
+            "None",
+            "Cardiac (CHF / low sodium)",
+            "Diabetic",
+            "Renal (ESRD / CKD 4-5)"
+        ],
+        help="Adds extra constraints to the meal plan but keeps your macros as a guide."
+    )
+
+    fluid_limit_l = None
+    if "Cardiac" in diet_pattern:
+        fluid_limit_l = st.number_input(
+            "Daily fluid limit (liters)",
+            min_value=0.5,
+            max_value=4.0,
+            value=1.5,
+            step=0.25,
+            help="Typical CHF fluid restriction is around 1.5–2.0 L/day; adjust per patient."
         )
 
-        st.subheader("3. Macro Settings (g/kg)")
-        col3, col4 = st.columns(2)
-        with col3:
-            protein_g_per_kg = st.number_input(
-                "Protein (g/kg for macro weight)",
-                min_value=0.8,
-                max_value=2.5,
-                value=1.4,
-                step=0.1,
-                help="Evidence-supported weight loss range: 1.2–1.6 g/kg."
-            )
-        with col4:
-            fat_g_per_kg = st.number_input(
-                "Fat (g/kg for macro weight)",
-                min_value=0.3,
-                max_value=1.5,
-                value=0.7,
-                step=0.1,
-                help="Common clinical range: 0.5–1.0 g/kg."
-            )
+    # 6. Fast-food options
+    st.subheader("6. Fast-food options (optional)")
 
-        st.subheader("4. Preferences for AI Meal Plan")
+    include_fast_food = st.checkbox(
+        "Allow some meals from fast-food restaurants",
+        value=False,
+        help="The plan will still try to hit macros and any medical diet constraints."
+    )
 
-        allergies = st.text_input("Allergies (comma-separated)", placeholder="e.g., peanuts, shellfish")
-        dislikes = st.text_input("Foods to avoid / dislikes", placeholder="e.g., mushrooms, cilantro")
-        preferred_store = st.text_input("Preferred market/store", placeholder="e.g., H-E-B, Costco, Walmart")
-        weekly_budget = st.number_input(
-            "Weekly grocery budget (USD)",
-            min_value=10.0,
-            max_value=1000.0,
-            value=120.0,
-            step=10.0,
-        )
-
-        language = st.selectbox(
-            "Meal plan language",
-            options=["English", "Spanish"],
-            help="Choose the language for the generated meal plan."
-        )
-
-        # 5. Clinical diet pattern
-        st.subheader("5. Clinical diet pattern (optional)")
-
-        diet_pattern = st.selectbox(
-            "Apply a medical diet template",
+    fast_food_chains = []
+    if include_fast_food:
+        fast_food_chains = st.multiselect(
+            "Allowed fast-food chains",
             options=[
-                "None",
-                "Cardiac (CHF / low sodium)",
-                "Diabetic",
-                "Renal (ESRD / CKD 4-5)"
+                "McDonald's",
+                "Chick-fil-A",
+                "Taco Bell",
+                "Subway",
+                "Chipotle",
+                "Wendy's",
+                "Burger King",
+                "Panera Bread",
+                "Starbucks",
+                "Five Guys",
+                "Whataburger",
+                "In-N-Out Burger",
+                "Jack in the Box",
+                "Sonic Drive-In",
+                "Carl's Jr.",
+                "Hardee's",
+                "Culver's",
+                "Smashburger",
+                "Rally's / Checkers",
+                "Freddy's Frozen Custard & Steakburgers",
+                "Steak 'n Shake",
+                "KFC",
+                "Popeyes",
+                "Raising Cane's",
+                "Church's Chicken",
+                "Zaxby's",
+                "Wingstop",
+                "Bojangles",
+                "El Pollo Loco",
+                "Domino's",
+                "Pizza Hut",
+                "Papa John's",
+                "Little Caesars",
+                "Marco's Pizza",
+                "Papa Murphy's",
+                "Blaze Pizza",
+                "MOD Pizza",
+                "Jimmy John's",
+                "Jersey Mike's",
+                "Firehouse Subs",
+                "Which Wich",
+                "Potbelly",
+                "Qdoba",
+                "Del Taco",
+                "Taco Cabana",
+                "Moe's Southwest Grill",
+                "Baja Fresh",
+                "Dunkin'",
+                "Tim Hortons",
+                "Einstein Bros Bagels",
+                "Krispy Kreme",
+                "Dutch Bros Coffee",
+                "Long John Silver's",
+                "Captain D's",
+                "Wienerschnitzel",
+                "Nathan's Famous",
+                "Dairy Queen",
+                "Baskin Robbins",
+                "Cold Stone Creamery",
+                "Ben & Jerry's",
+                "Panda Express",
+                "Arby's",
+                "Shake Shack",
+                "Noodles & Company",
+                "Jollibee",
             ],
-            help="Adds extra constraints to the meal plan but keeps your macros as a guide."
+            help="The AI can substitute some meals with items from these places."
         )
 
-        fluid_limit_l = None
-        if "Cardiac" in diet_pattern:
-            fluid_limit_l = st.number_input(
-                "Daily fluid limit (liters)",
-                min_value=0.5,
-                max_value=4.0,
-                value=1.5,
-                step=0.25,
-                help="Typical CHF fluid restriction is around 1.5–2.0 L/day; adjust per patient."
-            )
-
-        # 6. Fast-food options
-        st.subheader("6. Fast-food options (optional)")
-
-        include_fast_food = st.checkbox(
-            "Allow some meals from fast-food restaurants",
-            value=False,
-            help="The plan will still try to hit macros and any medical diet constraints."
-        )
-
-        fast_food_chains = []
-        if include_fast_food:
-            fast_food_chains = st.multiselect(
-                "Allowed fast-food chains",
-                options=[
-                   "McDonald's",
-"Chick-fil-A",
-"Taco Bell",
-"Subway",
-"Chipotle",
-"Wendy's",
-"Burger King",
-"Panera",
-"Starbucks",
-"Five Guys",
-"Whataburger",
-"In-N-Out Burger",
-"Jack in the Box",
-"Sonic Drive-In",
-"Carl's Jr.",
-"Hardee's",
-"Culver's",
-"Smashburger",
-"Rally's",
-"Checkers",
-"Freddy's Frozen Custard & Steakburgers",
-"Steak 'n Shake",
-"Chick-fil-A",
-"KFC",
-"Popeyes",
-"Raising Cane's",
-"Church's Chicken",
-"Zaxby's",
-"Wingstop",
-"Bojangles",
-"El Pollo Loco",
-"Domino's",
-"Pizza Hut",
-"Papa John's",
-"Little Caesars",
-"Marco's Pizza",
-"Papa Murphy's",
-"Blaze Pizza",
-"MOD Pizza",
-"Jimmy John's",
-"Jersey Mike's",
-"Firehouse Subs",
-"Which Wich",
-"Potbelly",
-"Panera Bread",
-"Taco Bell",
-"Qdoba",
-"Del Taco",
-"Taco Cabana",
-"Moe's Southwest Grill",
-"Baja Fresh",
-"Starbucks",
-"Dunkin'",
-"Tim Hortons",
-"Einstein Bros Bagels",
-"Krispy Kreme",
-"Dutch Bros Coffee",
-"Long John Silver's",
-"Captain D's",
-"Wienerschnitzel",
-"Nathan's Famous",
-"Dairy Queen",
-"Baskin Robbins",
-"Cold Stone Creamery",
-"Ben & Jerry's",
-"Panda Express",
-"Arby's",
-"Shake Shack",
-"Noodles & Company",
-"Jollibee"
-
-                ],
-                help="The AI can substitute some meals with items from these places."
-            )
-
-      # Single button instead of form submit
+    # Single button instead of form submit
     submitted = st.button("Calculate macros and generate meal plan")
 
     if submitted:
@@ -609,7 +606,7 @@ def main():
             mime="application/pdf",
         )
 
-
 if __name__ == "__main__":
     main()
+
 
