@@ -10,10 +10,16 @@ from reportlab.pdfgen import canvas
 
 MODEL_NAME = "gpt-4.1-mini"
 
+# ---------- OPENAI CLIENT SETUP ----------
+
+# Prefer Streamlit secrets in the cloud, fall back to local env
 api_key = None
+
+# Try Streamlit Cloud secrets
 try:
     api_key = st.secrets["OPENAI_API_KEY"]
-except:
+except Exception:
+    # If that fails (e.g., running locally), use environment variable
     api_key = os.getenv("OPENAI_API_KEY")
 
 if not api_key:
@@ -119,6 +125,9 @@ def build_mealplan_prompt(
     preferred_store: str,
     weekly_budget: float,
     language: str,
+    diet_pattern: str,
+    fluid_limit_l,
+    fast_food_chains,
 ):
     # Language instructions for the model
     if language == "Spanish":
@@ -132,31 +141,95 @@ def build_mealplan_prompt(
             "Use a clear, patient-friendly style."
         )
 
+    # Clinical diet instructions
+    clinical_note = ""
+    if diet_pattern == "Cardiac (CHF / low sodium)":
+        limit_txt = f"{fluid_limit_l:.1f} L/day" if fluid_limit_l else "about 1.5–2.0 L/day"
+        clinical_note = f"""
+CLINICAL DIET PATTERN: Cardiac diet for CHF with reduced ejection fraction.
+- Sodium goal: generally < 2,000 mg/day.
+- Emphasize high-fiber, low-sodium foods; minimize processed and canned foods.
+- Avoid obviously salty foods (chips, fries, cured meats, canned soups, frozen dinners with high sodium).
+- Fluid restriction: target total fluid intake of {limit_txt} per day (all beverages, soups, and liquid foods count). 
+  Standard CHF guidance is ~1.5 liters (1500 mL/day), unless otherwise individualized.
+- Include a simple suggested fluid schedule over the day (e.g., morning/afternoon/evening allowances).
+"""
+    elif diet_pattern == "Diabetic":
+        clinical_note = """
+CLINICAL DIET PATTERN: Diabetic diet for active diabetes.
+- Emphasize consistent, moderate carbohydrate intake spread throughout the day.
+- Prefer low–glycemic index carbohydrates (beans, lentils, whole grains, non-starchy vegetables).
+- Avoid sugary drinks, juice, desserts; minimize refined carbs and added sugars.
+- Pair carbohydrates with protein and/or fat to reduce postprandial glucose spikes.
+"""
+    elif diet_pattern == "Renal (ESRD / CKD 4-5)":
+        clinical_note = """
+CLINICAL DIET PATTERN: Renal diet for ESRD or CKD stage 4–5 (general guidance, not individualized).
+- Limit sodium and highly processed foods.
+- Avoid very high potassium foods in large amounts (bananas, oranges, potatoes, tomatoes, spinach, avocados, etc.).
+- Limit high phosphorus foods (colas, many processed foods, some dairy, organ meats).
+- Use moderate portions of protein; avoid extremely high-protein fad diets unless on dialysis and advised otherwise.
+- Prefer lower-potassium fruits and vegetables and simple home-cooked meals over restaurant / fast-food when possible.
+"""
+
+    # Fast-food instructions
+    fast_food_note = ""
+    if fast_food_chains:
+        chains_txt = ", ".join(fast_food_chains)
+        fast_food_note = f"""
+FAST-FOOD OPTIONS:
+- Patient is okay with using some meals from these fast-food chains: {chains_txt}.
+- You may replace up to 3–5 meals per week with fast-food items from those chains.
+- For each fast-food meal, specify the restaurant, item name, and approximate calories, protein, carbs, fat, and sodium.
+- Choose options that best fit the macro targets and any clinical diet constraints above.
+"""
+
+    # Pricing instructions
+    pricing_note = f"""
+PRICING AND GROCERY COST:
+- For the grocery list, include an approximate unit price in USD for each item based on typical US supermarket prices.
+- For each grocery line item, include a rough subtotal (quantity x unit price).
+- At the end of the grocery list, provide an approximate total grocery cost for the week.
+- Also estimate the total weekly cost including any fast-food meals.
+- Try to keep the total food cost near the weekly budget of ${weekly_budget:.2f}, but it is okay if it is only approximate.
+"""
+
     return f"""
 {lang_note}
 
 You are a registered dietitian and meal-planning assistant.
 
-Create a 7-day meal plan (breakfast, lunch, dinner, and 1–2 snacks per day)
-for a single adult based on the following macro targets:
-
+MACRO TARGETS (PER DAY):
 - Daily calories: {macros.target_kcal:.0f} kcal
 - Protein: {macros.protein_g:.0f} g/day
 - Carbohydrates: {macros.carbs_g:.0f} g/day
 - Fats: {macros.fat_g:.0f} g/day
 
-CONSTRAINTS:
+PATIENT CONSTRAINTS:
 - Allergies / must AVOID: {allergies or "none specified"}
 - Foods to avoid / dislikes: {dislikes or "none specified"}
 - Weekly grocery budget: ${weekly_budget:.2f} for all 7 days
 - Preferred grocery store or market: {preferred_store or "generic US supermarket"}
-- Use foods that are realistically available at that store.
+
+{clinical_note}
+
+{fast_food_note}
+
+{pricing_note}
+
+MEAL PLAN TASK:
+Create a 7-day meal plan (breakfast, lunch, dinner, and 1–2 snacks per day)
+for a single adult based on the macro targets and constraints above.
+
+Additional requirements:
 - Keep recipes simple and realistic for a busy person.
 - Reuse ingredients across meals to save cost and reduce waste.
 - Keep daily totals reasonably close to the macro targets.
 - Assume typical adult portion sizes; you may approximate macros.
+- Respect the clinical diet pattern if one is specified.
 
 OUTPUT FORMAT (plain text, no markdown tables):
+
 Day 1
 - Breakfast: ...
   Approx: X kcal, P: Y g, C: Z g, F: W g
@@ -169,15 +242,16 @@ Repeat for Days 1–7.
 
 At the end, include:
 1) A rough estimated daily calorie and macro summary per day.
-2) A rough estimated daily and weekly cost.
-3) One combined grocery list grouped by category:
+2) A rough estimated daily and weekly cost (grocery + fast-food if used).
+3) A combined grocery list grouped by category:
    - Produce
    - Protein
    - Dairy
    - Grains / Starches
    - Pantry
    - Frozen
-   - Other.
+   - Other
+   For each item, include approximate unit price and line total.
 """
 
 
@@ -188,6 +262,9 @@ def generate_meal_plan_with_ai(
     preferred_store: str,
     weekly_budget: float,
     language: str,
+    diet_pattern: str,
+    fluid_limit_l,
+    fast_food_chains,
 ) -> str:
     prompt = build_mealplan_prompt(
         macros=macros,
@@ -196,6 +273,9 @@ def generate_meal_plan_with_ai(
         preferred_store=preferred_store,
         weekly_budget=weekly_budget,
         language=language,
+        diet_pattern=diet_pattern,
+        fluid_limit_l=fluid_limit_l,
+        fast_food_chains=fast_food_chains,
     )
 
     completion = client.chat.completions.create(
@@ -216,25 +296,43 @@ def generate_meal_plan_with_ai(
 
 def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
     """
-    Turn plain text into a simple PDF and return it as bytes.
+    Turn plain text into a simple multi-page PDF and return it as bytes.
+    Long plans will automatically continue on additional pages.
     """
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
 
-    # Optional title
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(40, height - 40, title)
+    left_margin = 40
+    top_margin = 40
+    bottom_margin = 40
 
-    # Text body
+    # Title on first page
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(left_margin, height - top_margin, title)
+
+    # Set up text object for body
     textobject = c.beginText()
-    textobject.setTextOrigin(40, height - 60)
+    text_start_y = height - top_margin - 20  # a bit below the title
+    textobject.setTextOrigin(left_margin, text_start_y)
     textobject.setFont("Helvetica", 10)
     textobject.setLeading(14)
 
     for line in text.split("\n"):
+        # If we're out of space on the page, start a new one
+        if textobject.getY() <= bottom_margin:
+            c.drawText(textobject)
+            c.showPage()
+
+            # New page: no title (keeps it simple), just text
+            textobject = c.beginText()
+            textobject.setTextOrigin(left_margin, height - top_margin)
+            textobject.setFont("Helvetica", 10)
+            textobject.setLeading(14)
+
         textobject.textLine(line)
 
+    # Draw remaining text and finish
     c.drawText(textobject)
     c.showPage()
     c.save()
@@ -324,6 +422,58 @@ def main():
             help="Choose the language for the generated meal plan."
         )
 
+        # 5. Clinical diet pattern
+        st.subheader("5. Clinical diet pattern (optional)")
+
+        diet_pattern = st.selectbox(
+            "Apply a medical diet template",
+            options=[
+                "None",
+                "Cardiac (CHF / low sodium)",
+                "Diabetic",
+                "Renal (ESRD / CKD 4-5)"
+            ],
+            help="Adds extra constraints to the meal plan but keeps your macros as a guide."
+        )
+
+        fluid_limit_l = None
+        if "Cardiac" in diet_pattern:
+            fluid_limit_l = st.number_input(
+                "Daily fluid limit (liters)",
+                min_value=0.5,
+                max_value=4.0,
+                value=1.5,
+                step=0.25,
+                help="Typical CHF fluid restriction is around 1.5–2.0 L/day; adjust per patient."
+            )
+
+        # 6. Fast-food options
+        st.subheader("6. Fast-food options (optional)")
+
+        include_fast_food = st.checkbox(
+            "Allow some meals from fast-food restaurants",
+            value=False,
+            help="The plan will still try to hit macros and any medical diet constraints."
+        )
+
+        fast_food_chains = []
+        if include_fast_food:
+            fast_food_chains = st.multiselect(
+                "Allowed fast-food chains",
+                options=[
+                    "McDonald's",
+                    "Chick-fil-A",
+                    "Taco Bell",
+                    "Subway",
+                    "Chipotle",
+                    "Wendy's",
+                    "Burger King",
+                    "Panera",
+                    "Starbucks"
+                ],
+                help="The AI can substitute some meals with items from these places."
+            )
+
         submitted = st.form_submit_button("Calculate macros and generate meal plan")
 
     if submitted:
@@ -366,26 +516,36 @@ def main():
                     preferred_store=preferred_store,
                     weekly_budget=weekly_budget,
                     language=language,
+                    diet_pattern=diet_pattern,
+                    fluid_limit_l=fluid_limit_l,
+                    fast_food_chains=fast_food_chains,
                 )
-                st.text_area("Meal plan", plan_text, height=500)
-
-                pdf_bytes = create_pdf_from_text(
-                    plan_text,
-                    title="Meal Plan (Spanish)" if language == "Spanish" else "Meal Plan (English)",
-                )
-
-                st.download_button(
-                    label="Download meal plan as PDF",
-                    data=pdf_bytes,
-                    file_name="meal_plan.pdf",
-                    mime="application/pdf",
-                )
-
+                # Save to session state so it persists across reruns
+                st.session_state["plan_text"] = plan_text
+                st.session_state["plan_language"] = language
             except Exception as e:
                 st.error(f"Error generating meal plan: {e}")
+
+    # ---- ALWAYS SHOW CURRENT PLAN (IF ANY) + PDF DOWNLOAD ----
+    plan_text = st.session_state.get("plan_text", "")
+    plan_language = st.session_state.get("plan_language", "English")
+
+    if plan_text:
+        st.subheader("Current meal plan")
+        st.text_area("Meal plan", plan_text, height=500)
+
+        pdf_bytes = create_pdf_from_text(
+            plan_text,
+            title="Meal Plan (Spanish)" if plan_language == "Spanish" else "Meal Plan (English)",
+        )
+
+        st.download_button(
+            label="Download meal plan as PDF",
+            data=pdf_bytes,
+            file_name="meal_plan.pdf",
+            mime="application/pdf",
+        )
 
 
 if __name__ == "__main__":
     main()
-
-
