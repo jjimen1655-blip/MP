@@ -397,21 +397,98 @@ def main():
         layout="centered"
     )
 
-    st.title("Evidence-Based BMR, Macros & AI Meal Planner")
-    st.write("Prototype app using your macro logic plus an AI-generated 7-day meal plan.")
+    st.title("Personalized Meal Planning for the busy clinician")
+    st.write("Enter metrics and personal preferences below")
 
     # 1. Patient / User Info
     st.subheader("1. Patient / User Info")
 
     col1, col2 = st.columns(2)
-    with col1:
-        sex = st.selectbox("Sex", options=["M", "F"])
-        age = st.number_input("Age (years)", min_value=12, max_value=100, value=30)
-        height_cm = st.number_input("Height (cm)", min_value=120.0, max_value=230.0, value=170.0)
-    with col2:
-        weight_current_kg = st.number_input("Current weight (kg)", min_value=30.0, max_value=300.0, value=70.0)
-        weight_goal_kg = st.number_input("Goal weight (kg)", min_value=30.0, max_value=300.0, value=65.0)
-        weight_source = st.selectbox("Weight used for macros", options=["Current", "Goal"])
+   with col1:
+    sex = st.selectbox("Sex", options=["M", "F"])
+    age = st.number_input("Age (years)", min_value=12, max_value=100, value=30)
+
+    height_unit = st.radio(
+        "Height units",
+        options=["cm", "ft/in"],
+        index=1,  # default to ft/in
+        horizontal=True,
+    )
+
+    if height_unit == "cm":
+        height_cm = st.number_input(
+            "Height (cm)",
+            min_value=120.0,
+            max_value=230.0,
+            value=170.0,
+        )
+    else:
+        # Feet and inches input
+        height_ft = st.number_input(
+            "Height (feet)",
+            min_value=3,
+            max_value=7,
+            value=5,
+        )
+        height_in = st.number_input(
+            "Height (inches)",
+            min_value=0,
+            max_value=11,
+            value=6,
+        )
+
+        # Convert to cm for internal use
+        height_cm = height_ft * 30.48 + height_in * 2.54
+        st.caption(f"Calculated height: {height_cm:.1f} cm")
+with col2:
+    # Weight input selector
+    weight_unit = st.radio(
+        "Weight units",
+        options=["kg", "lbs"],
+        index=1,  # Default to lbs since it's most common in US
+        horizontal=True,
+    )
+
+    if weight_unit == "kg":
+        weight_current_kg = st.number_input(
+            "Current weight (kg)",
+            min_value=30.0,
+            max_value=300.0,
+            value=70.0,
+        )
+        weight_goal_kg = st.number_input(
+            "Goal weight (kg)",
+            min_value=30.0,
+            max_value=300.0,
+            value=65.0,
+        )
+
+    else:
+        # User provides weight in pounds
+        weight_current_lbs = st.number_input(
+            "Current weight (lbs)",
+            min_value=60.0,
+            max_value=660.0,
+            value=154.0,
+        )
+        weight_goal_lbs = st.number_input(
+            "Goal weight (lbs)",
+            min_value=60.0,
+            max_value=660.0,
+            value=143.0,
+        )
+
+        # Convert to kg internally
+        weight_current_kg = weight_current_lbs / 2.20462
+        weight_goal_kg = weight_goal_lbs / 2.20462
+
+        st.caption(f"Current weight: {weight_current_kg:.1f} kg\nGoal weight: {weight_goal_kg:.1f} kg")
+
+    # Macro weight source selection
+    weight_source = st.selectbox(
+        "Weight used for macros",
+        options=["Current", "Goal"]
+    )
 
     # 2. Activity & Weight-Loss Settings
     st.subheader("2. Activity & Weight-Loss Settings")
@@ -700,3 +777,4 @@ def main():
         )
 if __name__ == "__main__":
     main()
+
