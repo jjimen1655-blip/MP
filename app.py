@@ -698,7 +698,5 @@ def main():
             file_name="meal_plan.pdf",
             mime="application/pdf",
         )
-
-
-
-
+if __name__ == "__main__":
+    main()
