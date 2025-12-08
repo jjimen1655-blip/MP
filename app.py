@@ -411,7 +411,7 @@ def main():
     height_unit = st.radio(
         "Height units",
         options=["cm", "ft/in"],
-        index=1,  # default to ft/in
+        index=1,
         horizontal=True,
     )
 
@@ -423,7 +423,6 @@ def main():
             value=170.0,
         )
     else:
-        # Feet and inches input
         height_ft = st.number_input(
             "Height (feet)",
             min_value=3,
@@ -436,16 +435,14 @@ def main():
             max_value=11,
             value=6,
         )
-
-        # Convert to cm for internal use
         height_cm = height_ft * 30.48 + height_in * 2.54
         st.caption(f"Calculated height: {height_cm:.1f} cm")
+
 with col2:
-    # Weight input selector
     weight_unit = st.radio(
         "Weight units",
         options=["kg", "lbs"],
-        index=1,  # Default to lbs since it's most common in US
+        index=1,
         horizontal=True,
     )
 
@@ -464,7 +461,6 @@ with col2:
         )
 
     else:
-        # User provides weight in pounds
         weight_current_lbs = st.number_input(
             "Current weight (lbs)",
             min_value=60.0,
@@ -478,13 +474,14 @@ with col2:
             value=143.0,
         )
 
-        # Convert to kg internally
         weight_current_kg = weight_current_lbs / 2.20462
         weight_goal_kg = weight_goal_lbs / 2.20462
 
-        st.caption(f"Current weight: {weight_current_kg:.1f} kg\nGoal weight: {weight_goal_kg:.1f} kg")
+        st.caption(
+            f"Current weight: {weight_current_kg:.1f} kg\n"
+            f"Goal weight: {weight_goal_kg:.1f} kg"
+        )
 
-    # Macro weight source selection
     weight_source = st.selectbox(
         "Weight used for macros",
         options=["Current", "Goal"]
@@ -777,4 +774,5 @@ with col2:
         )
 if __name__ == "__main__":
     main()
+
 
