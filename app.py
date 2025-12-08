@@ -461,20 +461,83 @@ def main():
             fast_food_chains = st.multiselect(
                 "Allowed fast-food chains",
                 options=[
-                    "McDonald's",
-                    "Chick-fil-A",
-                    "Taco Bell",
-                    "Subway",
-                    "Chipotle",
-                    "Wendy's",
-                    "Burger King",
-                    "Panera",
-                    "Starbucks"
+                   "McDonald's",
+"Chick-fil-A",
+"Taco Bell",
+"Subway",
+"Chipotle",
+"Wendy's",
+"Burger King",
+"Panera",
+"Starbucks",
+"Five Guys",
+"Whataburger",
+"In-N-Out Burger",
+"Jack in the Box",
+"Sonic Drive-In",
+"Carl's Jr.",
+"Hardee's",
+"Culver's",
+"Smashburger",
+"Rally's",
+"Checkers",
+"Freddy's Frozen Custard & Steakburgers",
+"Steak 'n Shake",
+"Chick-fil-A",
+"KFC",
+"Popeyes",
+"Raising Cane's",
+"Church's Chicken",
+"Zaxby's",
+"Wingstop",
+"Bojangles",
+"El Pollo Loco",
+"Domino's",
+"Pizza Hut",
+"Papa John's",
+"Little Caesars",
+"Marco's Pizza",
+"Papa Murphy's",
+"Blaze Pizza",
+"MOD Pizza",
+"Jimmy John's",
+"Jersey Mike's",
+"Firehouse Subs",
+"Which Wich",
+"Potbelly",
+"Panera Bread",
+"Taco Bell",
+"Qdoba",
+"Del Taco",
+"Taco Cabana",
+"Moe's Southwest Grill",
+"Baja Fresh",
+"Starbucks",
+"Dunkin'",
+"Tim Hortons",
+"Einstein Bros Bagels",
+"Krispy Kreme",
+"Dutch Bros Coffee",
+"Long John Silver's",
+"Captain D's",
+"Wienerschnitzel",
+"Nathan's Famous",
+"Dairy Queen",
+"Baskin Robbins",
+"Cold Stone Creamery",
+"Ben & Jerry's",
+"Panda Express",
+"Arby's",
+"Shake Shack",
+"Noodles & Company",
+"Jollibee"
+
                 ],
                 help="The AI can substitute some meals with items from these places."
             )
 
-        submitted = st.form_submit_button("Calculate macros and generate meal plan")
+      # Single button instead of form submit
+    submitted = st.button("Calculate macros and generate meal plan")
 
     if submitted:
         macros = calculate_macros(
@@ -549,3 +612,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
