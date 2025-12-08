@@ -404,88 +404,91 @@ def main():
     st.subheader("1. Patient / User Info")
 
     col1, col2 = st.columns(2)
-   with col1:
-    sex = st.selectbox("Sex", options=["M", "F"])
-    age = st.number_input("Age (years)", min_value=12, max_value=100, value=30)
 
-    height_unit = st.radio(
-        "Height units",
-        options=["cm", "ft/in"],
-        index=1,
-        horizontal=True,
-    )
+    # ---- COLUMN 1: SEX, AGE, HEIGHT ----
+    with col1:
+        sex = st.selectbox("Sex", options=["M", "F"])
+        age = st.number_input("Age (years)", min_value=12, max_value=100, value=30)
 
-    if height_unit == "cm":
-        height_cm = st.number_input(
-            "Height (cm)",
-            min_value=120.0,
-            max_value=230.0,
-            value=170.0,
-        )
-    else:
-        height_ft = st.number_input(
-            "Height (feet)",
-            min_value=3,
-            max_value=7,
-            value=5,
-        )
-        height_in = st.number_input(
-            "Height (inches)",
-            min_value=0,
-            max_value=11,
-            value=6,
-        )
-        height_cm = height_ft * 30.48 + height_in * 2.54
-        st.caption(f"Calculated height: {height_cm:.1f} cm")
-
-with col2:
-    weight_unit = st.radio(
-        "Weight units",
-        options=["kg", "lbs"],
-        index=1,
-        horizontal=True,
-    )
-
-    if weight_unit == "kg":
-        weight_current_kg = st.number_input(
-            "Current weight (kg)",
-            min_value=30.0,
-            max_value=300.0,
-            value=70.0,
-        )
-        weight_goal_kg = st.number_input(
-            "Goal weight (kg)",
-            min_value=30.0,
-            max_value=300.0,
-            value=65.0,
+        height_unit = st.radio(
+            "Height units",
+            options=["cm", "ft/in"],
+            index=1,
+            horizontal=True,
         )
 
-    else:
-        weight_current_lbs = st.number_input(
-            "Current weight (lbs)",
-            min_value=60.0,
-            max_value=660.0,
-            value=154.0,
-        )
-        weight_goal_lbs = st.number_input(
-            "Goal weight (lbs)",
-            min_value=60.0,
-            max_value=660.0,
-            value=143.0,
+        if height_unit == "cm":
+            height_cm = st.number_input(
+                "Height (cm)",
+                min_value=120.0,
+                max_value=230.0,
+                value=170.0,
+            )
+        else:
+            height_ft = st.number_input(
+                "Height (feet)",
+                min_value=3,
+                max_value=7,
+                value=5,
+            )
+            height_in = st.number_input(
+                "Height (inches)",
+                min_value=0,
+                max_value=11,
+                value=6,
+            )
+            height_cm = height_ft * 30.48 + height_in * 2.54
+            st.caption(f"Calculated height: {height_cm:.1f} cm")
+
+    # ---- COLUMN 2: WEIGHT (KG OR LBS) ----
+    with col2:
+        weight_unit = st.radio(
+            "Weight units",
+            options=["kg", "lbs"],
+            index=1,  # default to lbs
+            horizontal=True,
         )
 
-        weight_current_kg = weight_current_lbs / 2.20462
-        weight_goal_kg = weight_goal_lbs / 2.20462
+        if weight_unit == "kg":
+            weight_current_kg = st.number_input(
+                "Current weight (kg)",
+                min_value=30.0,
+                max_value=300.0,
+                value=70.0,
+            )
+            weight_goal_kg = st.number_input(
+                "Goal weight (kg)",
+                min_value=30.0,
+                max_value=300.0,
+                value=65.0,
+            )
 
-        st.caption(
-            f"Current weight: {weight_current_kg:.1f} kg\n"
-            f"Goal weight: {weight_goal_kg:.1f} kg"
+        else:
+            weight_current_lbs = st.number_input(
+                "Current weight (lbs)",
+                min_value=60.0,
+                max_value=660.0,
+                value=154.0,
+            )
+            weight_goal_lbs = st.number_input(
+                "Goal weight (lbs)",
+                min_value=60.0,
+                max_value=660.0,
+                value=143.0,
+            )
+
+            weight_current_kg = weight_current_lbs / 2.20462
+            weight_goal_kg = weight_goal_lbs / 2.20462
+
+            st.caption(
+                f"Current weight: {weight_current_kg:.1f} kg\n"
+                f"Goal weight: {weight_goal_kg:.1f} kg"
+            )
+
+        weight_source = st.selectbox(
+            "Weight used for macros",
+            options=["Current", "Goal"]
         )
-
-    weight_source = st.selectbox(
-        "Weight used for macros",
-        options=["Current", "Goal"]
-    )
 
     # 2. Activity & Weight-Loss Settings
     st.subheader("2. Activity & Weight-Loss Settings")
@@ -774,5 +777,6 @@ with col2:
         )
 if __name__ == "__main__":
     main()
+
 
 
