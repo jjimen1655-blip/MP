@@ -7,6 +7,7 @@ import streamlit as st
 from openai import OpenAI
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
+from reportlab.pdfbase import pdfmetrics
 
 MODEL_NAME = "gpt-4.1-mini"
 
@@ -344,40 +345,75 @@ def generate_meal_plan_with_ai(
 def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
     """
     Turn plain text into a simple multi-page PDF and return it as bytes.
-    Long plans will automatically continue on additional pages.
+    Long lines are wrapped so they don't get cut off, and long plans
+    continue on additional pages.
     """
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
 
     left_margin = 40
+    right_margin = 40
     top_margin = 40
     bottom_margin = 40
 
-    # Title on first page
-    c.setFont("Helvetica-Bold", 14)
+    font_name_title = "Helvetica-Bold"
+    font_name_body = "Helvetica"
+    font_size_title = 14
+    font_size_body = 10
+    line_leading = 14
+
+    usable_width = width - left_margin - right_margin
+
+    # ---- Helper: wrap a single logical line into multiple PDF lines ----
+    def wrap_line(line: str, font_name: str, font_size: int, max_width: float):
+        """
+        Split a long string into a list of shorter strings that all fit
+        within max_width when rendered with the given font.
+        """
+        words = line.split(" ")
+        if not words:
+            return [""]
+
+        wrapped = []
+        current = words[0]
+        for word in words[1:]:
+            test = current + " " + word
+            w = pdfmetrics.stringWidth(test, font_name, font_size)
+            if w <= max_width:
+                current = test
+            else:
+                wrapped.append(current)
+                current = word
+        wrapped.append(current)
+        return wrapped
+
+    # ---- First page title ----
+    c.setFont(font_name_title, font_size_title)
     c.drawString(left_margin, height - top_margin, title)
 
-    # Set up text object for body
+    # Text object for body
     textobject = c.beginText()
     text_start_y = height - top_margin - 20  # a bit below the title
     textobject.setTextOrigin(left_margin, text_start_y)
-    textobject.setFont("Helvetica", 10)
-    textobject.setLeading(14)
+    textobject.setFont(font_name_body, font_size_body)
+    textobject.setLeading(line_leading)
 
-    for line in text.split("\n"):
-        # If we're out of space on the page, start a new one
-        if textobject.getY() <= bottom_margin:
-            c.drawText(textobject)
-            c.showPage()
+    for raw_line in text.split("\n"):
+        # Wrap the logical line into multiple physical lines
+        for line in wrap_line(raw_line, font_name_body, font_size_body, usable_width):
+            # New page if we're out of vertical space
+            if textobject.getY() <= bottom_margin:
+                c.drawText(textobject)
+                c.showPage()
 
-            # New page: no title (keeps it simple), just text
-            textobject = c.beginText()
-            textobject.setTextOrigin(left_margin, height - top_margin)
-            textobject.setFont("Helvetica", 10)
-            textobject.setLeading(14)
+                # New page: just body text from top margin
+                textobject = c.beginText()
+                textobject.setTextOrigin(left_margin, height - top_margin)
+                textobject.setFont(font_name_body, font_size_body)
+                textobject.setLeading(line_leading)
 
-        textobject.textLine(line)
+            textobject.textLine(line)
 
     # Draw remaining text and finish
     c.drawText(textobject)
@@ -387,6 +423,7 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
     pdf_bytes = buffer.getvalue()
     buffer.close()
     return pdf_bytes
+
 
 
 # ---------- STREAMLIT UI ----------
@@ -777,6 +814,7 @@ def main():
         )
 if __name__ == "__main__":
     main()
+
 
 
 
