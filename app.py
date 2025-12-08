@@ -218,14 +218,16 @@ COOKING VS PREMADE:
 - Reuse ingredients across cooked and premade meals to save time and reduce waste.
 """
 
-    # Pricing instructions
     pricing_note = f"""
 PRICING AND GROCERY COST:
-- For the grocery list, include an approximate unit price in USD for each item based on typical US supermarket prices.
-- For each grocery line item, include a rough subtotal (quantity x unit price).
-- At the end of the grocery list, provide an approximate total grocery cost for the week.
+- All prices listed are ESTIMATES ONLY based on typical U.S. supermarket averages.
+- Prices may vary significantly by region, store, sales, inflation, or product availability.
+- DO NOT interpret the listed prices as real-time data.
+- When the user lists multiple preferred stores, choose ONE store that best matches the items and use typical market prices.
+- For each grocery line item, include an estimated unit price and a line total.
+- At the end, provide an approximate total grocery cost for the week.
 - Also estimate the total weekly cost including any fast-food meals.
-- Try to keep the total food cost near the weekly budget of ${weekly_budget:.2f}, but it is okay if it is only approximate.
+- Try to keep the total cost near the weekly budget of ${weekly_budget:.2f}, but approximate values are acceptable.
 """
 
     return f"""
@@ -295,7 +297,15 @@ At the end, include:
    - Other
    For each item, include approximate unit price and line total.
 """
+IMPORTANT PRICE DISCLAIMER:
+All prices listed are estimates only and are NOT real-time. Actual costs vary by store, region, and availability.
+"""
 
+st.info(
+    "💲 **Price Disclaimer:** All grocery prices in the generated meal plan are estimates only.\n"
+    "They do not reflect real-time pricing from Walmart, H-E-B, Costco, or any other retailer.\n"
+    "Real-time pricing will be added once API access is approved."
+)
 def generate_meal_plan_with_ai(
     macros: MacroResult,
     allergies: str,
@@ -814,6 +824,7 @@ def main():
         )
 if __name__ == "__main__":
     main()
+
 
 
 
