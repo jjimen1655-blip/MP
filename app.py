@@ -20,7 +20,6 @@ api_key = None
 try:
     api_key = st.secrets["OPENAI_API_KEY"]
 except Exception:
-    # If that fails (e.g., running locally), use environment variable
     api_key = os.getenv("OPENAI_API_KEY")
 
 if not api_key:
@@ -155,9 +154,8 @@ CLINICAL DIET PATTERN: Cardiac diet for CHF with reduced ejection fraction.
 - Sodium goal: generally < 2,000 mg/day.
 - Emphasize high-fiber, low-sodium foods; minimize processed and canned foods.
 - Avoid obviously salty foods (chips, fries, cured meats, canned soups, frozen dinners with high sodium).
-- Fluid restriction: target total fluid intake of {limit_txt} per day (all beverages, soups, and liquid foods count). 
-  Standard CHF guidance is ~1.5 liters (1500 mL/day), unless otherwise individualized.
-- Include a simple suggested fluid schedule over the day (e.g., morning/afternoon/evening allowances).
+- Fluid restriction: target total fluid intake of {limit_txt} per day (all beverages, soups, and liquid foods count).
+- Include a simple suggested fluid schedule over the day (morning / afternoon / evening).
 """
     elif diet_pattern == "Diabetic":
         clinical_note = """
@@ -172,7 +170,7 @@ CLINICAL DIET PATTERN: Diabetic diet for active diabetes.
 CLINICAL DIET PATTERN: Renal diet for ESRD or CKD stage 4–5 (general guidance, not individualized).
 - Limit sodium and highly processed foods.
 - Avoid very high potassium foods in large amounts (bananas, oranges, potatoes, tomatoes, spinach, avocados, etc.).
-- Limit high phosphorus foods (colas, many processed foods, some dairy, organ meats).
+- Limit high phosphorus foods (colas, processed foods, some dairy, organ meats).
 - Use moderate portions of protein; avoid extremely high-protein fad diets unless on dialysis and advised otherwise.
 - Prefer lower-potassium fruits and vegetables and simple home-cooked meals over restaurant / fast-food when possible.
 """
@@ -183,7 +181,7 @@ CLINICAL DIET PATTERN: Renal diet for ESRD or CKD stage 4–5 (general guidance,
         chains_txt = ", ".join(fast_food_chains)
         fast_food_note = f"""
 FAST-FOOD / TAKEOUT PATTERN:
-- Patient is okay with using some meals from these fast-food chains: {chains_txt}.
+- Patient allows some meals from these fast-food chains: {chains_txt}.
 - Aim for roughly {fast_food_percent}% of total weekly meals to be from fast-food or takeout.
 - Not every day has to include fast-food; spread it across the week in a realistic way.
 - For each fast-food meal, specify the restaurant, item name, and approximate calories, protein, carbs, fat, and sodium.
@@ -217,21 +215,21 @@ COOKING VS PREMADE:
 - Use a balanced mix of home-cooked meals, ready-to-eat items, and occasional fast-food or takeout.
 - Reuse ingredients across cooked and premade meals to save time and reduce waste.
 """
-    # Pricing disclaimer block (SAFE)
+
+    # Pricing disclaimer block
     pricing_note = f"""
 PRICING AND GROCERY COST (ESTIMATES ONLY):
-- All prices in the grocery list must be **estimated averages**, not real-time data.
+- All prices in the grocery list must be estimated averages, not real-time retailer data.
 - Prices vary by location, availability, sales, and inflation.
-- When multiple stores are listed, choose ONE to base estimates on.
-- Include estimated unit price + line total for each grocery item.
+- When multiple stores are listed, choose ONE store to base estimates on.
+- Include estimated unit price and line total for each grocery item.
 - Provide estimated daily and weekly cost.
 - Try to stay near a weekly budget of ${weekly_budget:.2f}, but rounding is fine.
 """
-    pricing_note = f"""
-    # FINAL PROMPT ASSEMBLY (SAFE — NO EXTRA STRINGS AFTER THIS)
+
+    # FINAL PROMPT
     return f"""
 {lang_note}
-
 
 You are a registered dietitian and meal-planning assistant.
 
@@ -293,6 +291,11 @@ At the end, include:
    - Other
    For each item, include approximate unit price and line total.
 
+PRICE DISCLAIMER:
+All prices are estimates only and NOT real-time retailer data. Actual prices vary by store and region.
+"""
+
+
 def generate_meal_plan_with_ai(
     macros: MacroResult,
     allergies: str,
@@ -337,6 +340,7 @@ def generate_meal_plan_with_ai(
 
     return completion.choices[0].message.content
 
+
 # ---------- PDF GENERATION ----------
 
 def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
@@ -364,10 +368,6 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
 
     # ---- Helper: wrap a single logical line into multiple PDF lines ----
     def wrap_line(line: str, font_name: str, font_size: int, max_width: float):
-        """
-        Split a long string into a list of shorter strings that all fit
-        within max_width when rendered with the given font.
-        """
         words = line.split(" ")
         if not words:
             return [""]
@@ -397,22 +397,16 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
     textobject.setLeading(line_leading)
 
     for raw_line in text.split("\n"):
-        # Wrap the logical line into multiple physical lines
         for line in wrap_line(raw_line, font_name_body, font_size_body, usable_width):
-            # New page if we're out of vertical space
             if textobject.getY() <= bottom_margin:
                 c.drawText(textobject)
                 c.showPage()
-
-                # New page: just body text from top margin
                 textobject = c.beginText()
                 textobject.setTextOrigin(left_margin, height - top_margin)
                 textobject.setFont(font_name_body, font_size_body)
                 textobject.setLeading(line_leading)
-
             textobject.textLine(line)
 
-    # Draw remaining text and finish
     c.drawText(textobject)
     c.showPage()
     c.save()
@@ -420,7 +414,6 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
     pdf_bytes = buffer.getvalue()
     buffer.close()
     return pdf_bytes
-
 
 
 # ---------- STREAMLIT UI ----------
@@ -583,6 +576,12 @@ def main():
         help="Choose the language for the generated meal plan."
     )
 
+    st.info(
+        "💲 **Price Disclaimer:** All grocery prices in the generated meal plan are estimates only.\n"
+        "They do not reflect real-time pricing from Walmart, H-E-B, Costco, or any other retailer.\n"
+        "Real-time pricing will be added once API access is approved."
+    )
+
     # 5. Clinical diet pattern
     st.subheader("5. Clinical diet pattern (optional)")
 
@@ -691,7 +690,6 @@ def main():
             help="The AI can substitute some meals with items from these places."
         )
 
-    # % of meals that can be fast-food
     fast_food_percent = 0
     if include_fast_food:
         fast_food_percent = st.slider(
@@ -733,7 +731,6 @@ def main():
         help="Guides how many meals rely on cooking vs ready-to-eat store items."
     )
 
-    # Single button instead of form submit
     submitted = st.button("Calculate macros and generate meal plan")
 
     if submitted:
@@ -784,13 +781,11 @@ def main():
                     snacks_per_day=snacks_per_day,
                     prep_style=prep_style,
                 )
-                # Save to session state so it persists across reruns
                 st.session_state["plan_text"] = plan_text
                 st.session_state["plan_language"] = language
             except Exception as e:
                 st.error(f"Error generating meal plan: {e}")
 
-    # ---- ALWAYS SHOW CURRENT PLAN (IF ANY) + PDF DOWNLOAD ----
     plan_text = st.session_state.get("plan_text", "")
     plan_language = st.session_state.get("plan_language", "English")
 
@@ -809,11 +804,7 @@ def main():
             file_name="meal_plan.pdf",
             mime="application/pdf",
         )
+
+
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
