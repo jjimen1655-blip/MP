@@ -217,21 +217,21 @@ COOKING VS PREMADE:
 - Use a balanced mix of home-cooked meals, ready-to-eat items, and occasional fast-food or takeout.
 - Reuse ingredients across cooked and premade meals to save time and reduce waste.
 """
-
+    # Pricing disclaimer block (SAFE)
     pricing_note = f"""
-PRICING AND GROCERY COST:
-- All prices listed are ESTIMATES ONLY based on typical U.S. supermarket averages.
-- Prices may vary significantly by region, store, sales, inflation, or product availability.
-- DO NOT interpret the listed prices as real-time data.
-- When the user lists multiple preferred stores, choose ONE store that best matches the items and use typical market prices.
-- For each grocery line item, include an estimated unit price and a line total.
-- At the end, provide an approximate total grocery cost for the week.
-- Also estimate the total weekly cost including any fast-food meals.
-- Try to keep the total cost near the weekly budget of ${weekly_budget:.2f}, but approximate values are acceptable.
+PRICING AND GROCERY COST (ESTIMATES ONLY):
+- All prices in the grocery list must be **estimated averages**, not real-time data.
+- Prices vary by location, availability, sales, and inflation.
+- When multiple stores are listed, choose ONE to base estimates on.
+- Include estimated unit price + line total for each grocery item.
+- Provide estimated daily and weekly cost.
+- Try to stay near a weekly budget of ${weekly_budget:.2f}, but rounding is fine.
 """
-
+    pricing_note = f"""
+    # FINAL PROMPT ASSEMBLY (SAFE — NO EXTRA STRINGS AFTER THIS)
     return f"""
 {lang_note}
+
 
 You are a registered dietitian and meal-planning assistant.
 
@@ -248,13 +248,9 @@ PATIENT CONSTRAINTS:
 - Preferred grocery store or market: {preferred_store or "generic US supermarket"}
 
 {clinical_note}
-
 {fast_food_note}
-
 {meal_timing_note}
-
 {prep_note}
-
 {pricing_note}
 
 MEAL PLAN TASK:
@@ -296,16 +292,7 @@ At the end, include:
    - Frozen
    - Other
    For each item, include approximate unit price and line total.
-"""
-IMPORTANT PRICE DISCLAIMER:
-All prices listed are estimates only and are NOT real-time. Actual costs vary by store, region, and availability.
-"""
 
-st.info(
-    "💲 **Price Disclaimer:** All grocery prices in the generated meal plan are estimates only.\n"
-    "They do not reflect real-time pricing from Walmart, H-E-B, Costco, or any other retailer.\n"
-    "Real-time pricing will be added once API access is approved."
-)
 def generate_meal_plan_with_ai(
     macros: MacroResult,
     allergies: str,
@@ -824,6 +811,7 @@ def main():
         )
 if __name__ == "__main__":
     main()
+
 
 
 
