@@ -457,13 +457,13 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
                 i += 1
                 continue
 
-            # Detect meal lines: "- Main meal 1: ..." or "- Snack 1: ..."
+            # Detect *meal* bullets, but ONLY if they have an "Approx:" line after them
             if current_day is not None and line.startswith("- "):
                 desc = line[2:].strip()
-                used_indices.add(i)
 
                 # Look ahead for an "Approx:" line
                 macros_line = ""
+                macros_idx = None
                 j = i + 1
                 while j < len(lines):
                     look_raw = lines[j]
@@ -473,9 +473,18 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
                         break
                     if look.startswith("Approx:"):
                         macros_line = look
-                        used_indices.add(j)
+                        macros_idx = j
                         break
                     j += 1
+                # If there is NO macros line, this bullet is not a meal row.
+                # Leave it as leftover text.
+                if not macros_line:
+                    i += 1
+                    continue
+                # Otherwise, treat as a meal row
+                used_indices.add(i)
+                if macros_idx is not None:
+                    used_indices.add(macros_idx)
 
                 meal_number = len(current_rows) + 1
                 current_rows.append(
@@ -1068,6 +1077,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
