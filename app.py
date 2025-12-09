@@ -570,7 +570,7 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
 
         # Header labels (vertically centered-ish)
         baseline_offset = (header_height - table_header_size) / 2
-        text_y = header_top_y - baseline_offset - 3
+        text_y = header_top_y - baseline_offset - 4
         c.drawString(col1_x + 2, text_y, "Meal #")
         c.drawString(col2_x + 2, text_y, "Meal description")
         c.drawString(col3_x + 2, text_y, "Approx kcal & macros")
@@ -610,7 +610,7 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
                 c.line(page_width - right_margin, header_top_y, page_width - right_margin, header_bottom_y)
 
                 baseline_offset = (header_height - table_header_size) / 2
-                text_y = header_top_y - baseline_offset - 3
+                text_y = header_top_y - baseline_offset - 4
                 c.drawString(col1_x + 2, text_y, "Meal #")
                 c.drawString(col2_x + 2, text_y, "Meal description")
                 c.drawString(col3_x + 2, text_y, "Approx kcal & macros")
@@ -1068,6 +1068,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
