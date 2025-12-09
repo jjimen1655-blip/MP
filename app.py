@@ -395,13 +395,10 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
     table_leading = 10  # line spacing inside table cells
     body_leading = 14   # line spacing for plain text
 
-    # --- Helpers ---
+    # ---------- Helpers ----------
 
     def wrap_text(text_line: str, font_name: str, font_size: int, max_width: float):
-        """
-        Wrap a single line of text to fit within max_width using the given font.
-        Returns a list of wrapped lines.
-        """
+        """Wrap a single line of text to fit within max_width using the given font."""
         words = text_line.split()
         if not words:
             return [""]
@@ -449,14 +446,10 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
             raw = lines[i]
             line = raw.strip()
 
-            # Detect "Day X" header
+            # Detect "Day X" header (or "Día X" etc. if you later localize)
             if line.startswith("Day "):
-                # store previous day
                 if current_day is not None:
-                    days.append({
-                        "day_title": current_day,
-                        "rows": current_rows
-                    })
+                    days.append({"day_title": current_day, "rows": current_rows})
                     current_rows = []
 
                 current_day = line
@@ -485,11 +478,9 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
                     j += 1
 
                 meal_number = len(current_rows) + 1
-                current_rows.append((
-                    f"Meal {meal_number}",
-                    desc,
-                    macros_line or ""
-                ))
+                current_rows.append(
+                    (f"Meal {meal_number}", desc, macros_line or "")
+                )
 
                 i += 1
                 continue
@@ -498,10 +489,7 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
 
         # Store last day
         if current_day is not None:
-            days.append({
-                "day_title": current_day,
-                "rows": current_rows
-            })
+            days.append({"day_title": current_day, "rows": current_rows})
 
         # Leftover lines (non-table content)
         leftover_lines = [
@@ -511,30 +499,31 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
         return days, leftover_lines
 
     def new_page_with_title():
+        """Start a new page and redraw the main title."""
         c.showPage()
         c.setFont(title_font, title_size)
         c.drawString(left_margin, page_height - top_margin, title)
         y = page_height - top_margin - 25
         return y
 
-    # --- Start first page with main title ---
+    # ---------- Start first page with main title ----------
     c.setFont(title_font, title_size)
     c.drawString(left_margin, page_height - top_margin, title)
     current_y = page_height - top_margin - 25
 
-    # --- Parse text into structured days + leftover text ---
+    # Parse text into structured days + leftover text
     days, leftover_lines = parse_days_and_meals(text)
 
-    # --- Table column layout ---
-    col1_width = 60   # Meal #
-    col3_width = 150  # Macros
+    # ---------- Table column layout ----------
+    col1_width = 70   # Meal #
+    col3_width = 130  # Macros
     col2_width = usable_width - col1_width - col3_width  # Description
 
     col1_x = left_margin
     col2_x = col1_x + col1_width
     col3_x = col2_x + col2_width
 
-    # --- Draw tables for each day ---
+    # ---------- Draw tables for each day ----------
     for day in days:
         day_title = day["day_title"]
         rows = day["rows"]
@@ -555,29 +544,32 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
         # Day title
         c.setFont(day_font, day_size)
         c.drawString(left_margin, current_y, day_title)
-        current_y -= 18
+        current_y -= 25  # a bit more spacing after the day label
 
         # Table header
         header_height = table_leading + 4
         if current_y - header_height <= bottom_margin:
             current_y = new_page_with_title()
             c.setFont(day_font, day_size)
-            c.drawString(left_margin, current_y, day_title)
-            current_y -= 18
+            c.drawString(left_margin, current_y, day_title + " (cont.)")
+            current_y -= 25
 
         c.setFont(table_header_font, table_header_size)
-        # Header bounding line
-        c.line(left_margin, current_y, page_width - right_margin, current_y)
+        header_top_y = current_y
         header_bottom_y = current_y - header_height
-        c.line(left_margin, header_bottom_y, page_width - right_margin, header_bottom_y)
-        # Vertical lines for columns
-        c.line(col1_x, current_y, col1_x, header_bottom_y)
-        c.line(col2_x, current_y, col2_x, header_bottom_y)
-        c.line(col3_x, current_y, col3_x, header_bottom_y)
-        c.line(page_width - right_margin, current_y, page_width - right_margin, header_bottom_y)
 
-        # Header labels
-        text_y = current_y - (header_height - table_leading) / 2 - 2
+        # Horizontal borders
+        c.line(left_margin, header_top_y, page_width - right_margin, header_top_y)
+        c.line(left_margin, header_bottom_y, page_width - right_margin, header_bottom_y)
+
+        # Vertical column borders
+        c.line(col1_x, header_top_y, col1_x, header_bottom_y)
+        c.line(col2_x, header_top_y, col2_x, header_bottom_y)
+        c.line(col3_x, header_top_y, col3_x, header_bottom_y)
+        c.line(page_width - right_margin, header_top_y, page_width - right_margin, header_bottom_y)
+
+        # Header labels (vertically centered-ish)
+        text_y = header_top_y - (header_height / 2) + (table_leading / 2) - 2
         c.drawString(col1_x + 2, text_y, "Meal #")
         c.drawString(col2_x + 2, text_y, "Meal description")
         c.drawString(col3_x + 2, text_y, "Approx kcal & macros")
@@ -601,20 +593,22 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
                 # Redraw day title and header on new page (continuation)
                 c.setFont(day_font, day_size)
                 c.drawString(left_margin, current_y, f"{day_title} (cont.)")
-                current_y -= 18
+                current_y -= 25
 
                 # Header again
                 header_height = table_leading + 4
                 c.setFont(table_header_font, table_header_size)
-                c.line(left_margin, current_y, page_width - right_margin, current_y)
+                header_top_y = current_y
                 header_bottom_y = current_y - header_height
-                c.line(left_margin, header_bottom_y, page_width - right_margin, header_bottom_y)
-                c.line(col1_x, current_y, col1_x, header_bottom_y)
-                c.line(col2_x, current_y, col2_x, header_bottom_y)
-                c.line(col3_x, current_y, col3_x, header_bottom_y)
-                c.line(page_width - right_margin, current_y, page_width - right_margin, header_bottom_y)
 
-                text_y = current_y - (header_height - table_leading) / 2 - 2
+                c.line(left_margin, header_top_y, page_width - right_margin, header_top_y)
+                c.line(left_margin, header_bottom_y, page_width - right_margin, header_bottom_y)
+                c.line(col1_x, header_top_y, col1_x, header_bottom_y)
+                c.line(col2_x, header_top_y, col2_x, header_bottom_y)
+                c.line(col3_x, header_top_y, col3_x, header_bottom_y)
+                c.line(page_width - right_margin, header_top_y, page_width - right_margin, header_bottom_y)
+
+                text_y = header_top_y - (header_height / 2) + (table_leading / 2) - 2
                 c.drawString(col1_x + 2, text_y, "Meal #")
                 c.drawString(col2_x + 2, text_y, "Meal description")
                 c.drawString(col3_x + 2, text_y, "Approx kcal & macros")
@@ -622,9 +616,10 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
                 current_y = header_bottom_y
                 c.setFont(table_body_font, table_body_size)
 
-            # Draw row lines
+            # Draw row borders
             row_top_y = current_y
             row_bottom_y = current_y - row_height
+
             c.line(left_margin, row_top_y, page_width - right_margin, row_top_y)
             c.line(left_margin, row_bottom_y, page_width - right_margin, row_bottom_y)
             c.line(col1_x, row_top_y, col1_x, row_bottom_y)
@@ -647,22 +642,18 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
 
         current_y -= 18  # Space after each day's table
 
-    # --- Leftover text (summaries, grocery list, etc.) as plain text ---
-
+    # ---------- Leftover text as plain wrapped text ----------
     if leftover_lines:
-        # New page if we're tight on space
         if current_y <= bottom_margin + 40:
             current_y = new_page_with_title()
 
         c.setFont(body_font, body_size)
-        c.setFillGray(0)
         text_obj = c.beginText()
         text_obj.setTextOrigin(left_margin, current_y)
         text_obj.setFont(body_font, body_size)
         text_obj.setLeading(body_leading)
 
         for raw_line in leftover_lines:
-            # Wrap long lines to fit page width
             wrapped_lines = wrap_text(raw_line, body_font, body_size, usable_width)
             for line in wrapped_lines:
                 if text_obj.getY() <= bottom_margin:
@@ -676,7 +667,7 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
 
         c.drawText(text_obj)
 
-    c.showPage()
+    # Do NOT add an extra showPage() here; just save the current page.
     c.save()
 
     pdf_bytes = buffer.getvalue()
@@ -1075,5 +1066,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
