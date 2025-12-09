@@ -258,7 +258,7 @@ PATIENT CONSTRAINTS:
 {pricing_note}
 
 MEAL PLAN TASK:
-Create a 7-day meal plan for a single adult based on the macro targets and constraints above.
+Create a 14-day meal plan for a single adult based on the macro targets and constraints above.
 
 STRUCTURE:
 - For each day, include exactly {big_meals_per_day} main meal(s) and {snacks_per_day} snack time(s).
@@ -282,9 +282,9 @@ Day 1
 - Snack 2: ...
 (Adjust labels and counts to match the number of main meals and snacks requested.)
 
-Repeat for Days 1–7.
+Repeat for Days 1–14.
 
-At the end, include:
+At the end of the 14 days, include:
 1) A rough estimated daily calorie and macro summary per day.
 2) A rough estimated daily and weekly cost (grocery + fast-food if used).
 3) A combined grocery list grouped by category:
@@ -351,34 +351,62 @@ def generate_meal_plan_with_ai(
 
 def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
     """
-    Turn plain text into a simple multi-page PDF and return it as bytes.
-    Long lines are wrapped so they don't get cut off, and long plans
-    continue on additional pages.
+    Turn plain text into a multi-page PDF with real tables for the daily meals.
+    It looks for patterns like:
+
+    Day 1
+    - Main meal 1: ...
+      Approx: X kcal, P: Y g, C: Z g, F: W g
+
+    and converts them into rows:
+    Meal # | Meal description | Approx kcal & macros
+
+    Any remaining text (summaries, grocery list, etc.) is rendered as
+    plain wrapped text after the tables.
     """
+    from io import BytesIO
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+    from reportlab.pdfbase import pdfmetrics
+
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=letter)
-    width, height = letter
+    page_width, page_height = letter
 
     left_margin = 40
     right_margin = 40
     top_margin = 40
     bottom_margin = 40
 
-    font_name_title = "Helvetica-Bold"
-    font_name_body = "Helvetica"
-    font_size_title = 14
-    font_size_body = 10
-    line_leading = 14
+    usable_width = page_width - left_margin - right_margin
 
-    usable_width = width - left_margin - right_margin
+    # Fonts / sizes
+    title_font = "Helvetica-Bold"
+    title_size = 14
+    day_font = "Helvetica-Bold"
+    day_size = 12
+    table_header_font = "Helvetica-Bold"
+    table_header_size = 9
+    table_body_font = "Helvetica"
+    table_body_size = 8
+    body_font = "Helvetica"
+    body_size = 10
 
-    # ---- Helper: wrap a single logical line into multiple PDF lines ----
-    def wrap_line(line: str, font_name: str, font_size: int, max_width: float):
-        words = line.split(" ")
+    table_leading = 10  # line spacing inside table cells
+    body_leading = 14   # line spacing for plain text
+
+    # --- Helpers ---
+
+    def wrap_text(text_line: str, font_name: str, font_size: int, max_width: float):
+        """
+        Wrap a single line of text to fit within max_width using the given font.
+        Returns a list of wrapped lines.
+        """
+        words = text_line.split()
         if not words:
             return [""]
 
-        wrapped = []
+        lines = []
         current = words[0]
         for word in words[1:]:
             test = current + " " + word
@@ -386,41 +414,274 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
             if w <= max_width:
                 current = test
             else:
-                wrapped.append(current)
+                lines.append(current)
                 current = word
-        wrapped.append(current)
-        return wrapped
+        lines.append(current)
+        return lines
 
-    # ---- First page title ----
-    c.setFont(font_name_title, font_size_title)
-    c.drawString(left_margin, height - top_margin, title)
+    def parse_days_and_meals(text: str):
+        """
+        Parse the raw text into a structure:
+        [
+          {
+            "day_title": "Day 1",
+            "rows": [
+              ("Meal 1", "Main meal 1: ...", "Approx: X kcal, P: ..."),
+              ("Meal 2", "Snack 1: ...", "Approx: ..."),
+              ...
+            ]
+          },
+          ...
+        ]
 
-    # Text object for body
-    textobject = c.beginText()
-    text_start_y = height - top_margin - 20  # a bit below the title
-    textobject.setTextOrigin(left_margin, text_start_y)
-    textobject.setFont(font_name_body, font_size_body)
-    textobject.setLeading(line_leading)
+        Also returns a list of "leftover" lines (non-meal content) to print as
+        regular text after the tables.
+        """
+        lines = text.splitlines()
+        used_indices = set()
 
-    for raw_line in text.split("\n"):
-        for line in wrap_line(raw_line, font_name_body, font_size_body, usable_width):
-            if textobject.getY() <= bottom_margin:
-                c.drawText(textobject)
-                c.showPage()
-                textobject = c.beginText()
-                textobject.setTextOrigin(left_margin, height - top_margin)
-                textobject.setFont(font_name_body, font_size_body)
-                textobject.setLeading(line_leading)
-            textobject.textLine(line)
+        days = []
+        current_day = None
+        current_rows = []
 
-    c.drawText(textobject)
+        i = 0
+        while i < len(lines):
+            raw = lines[i]
+            line = raw.strip()
+
+            # Detect "Day X" header
+            if line.startswith("Day "):
+                # store previous day
+                if current_day is not None:
+                    days.append({
+                        "day_title": current_day,
+                        "rows": current_rows
+                    })
+                    current_rows = []
+
+                current_day = line
+                used_indices.add(i)
+                i += 1
+                continue
+
+            # Detect meal lines: "- Main meal 1: ..." or "- Snack 1: ..."
+            if current_day is not None and line.startswith("- "):
+                desc = line[2:].strip()
+                used_indices.add(i)
+
+                # Look ahead for an "Approx:" line
+                macros_line = ""
+                j = i + 1
+                while j < len(lines):
+                    look_raw = lines[j]
+                    look = look_raw.strip()
+                    # Stop if we hit next meal or next day
+                    if look.startswith("- ") or look.startswith("Day "):
+                        break
+                    if look.startswith("Approx:"):
+                        macros_line = look
+                        used_indices.add(j)
+                        break
+                    j += 1
+
+                meal_number = len(current_rows) + 1
+                current_rows.append((
+                    f"Meal {meal_number}",
+                    desc,
+                    macros_line or ""
+                ))
+
+                i += 1
+                continue
+
+            i += 1
+
+        # Store last day
+        if current_day is not None:
+            days.append({
+                "day_title": current_day,
+                "rows": current_rows
+            })
+
+        # Leftover lines (non-table content)
+        leftover_lines = [
+            lines[idx] for idx in range(len(lines)) if idx not in used_indices
+        ]
+
+        return days, leftover_lines
+
+    def new_page_with_title():
+        c.showPage()
+        c.setFont(title_font, title_size)
+        c.drawString(left_margin, page_height - top_margin, title)
+        y = page_height - top_margin - 25
+        return y
+
+    # --- Start first page with main title ---
+    c.setFont(title_font, title_size)
+    c.drawString(left_margin, page_height - top_margin, title)
+    current_y = page_height - top_margin - 25
+
+    # --- Parse text into structured days + leftover text ---
+    days, leftover_lines = parse_days_and_meals(text)
+
+    # --- Table column layout ---
+    col1_width = 60   # Meal #
+    col3_width = 150  # Macros
+    col2_width = usable_width - col1_width - col3_width  # Description
+
+    col1_x = left_margin
+    col2_x = col1_x + col1_width
+    col3_x = col2_x + col2_width
+
+    # --- Draw tables for each day ---
+    for day in days:
+        day_title = day["day_title"]
+        rows = day["rows"]
+
+        if not rows:
+            # If somehow no rows for this day, just print the day label as text
+            if current_y <= bottom_margin + 40:
+                current_y = new_page_with_title()
+            c.setFont(day_font, day_size)
+            c.drawString(left_margin, current_y, day_title)
+            current_y -= 20
+            continue
+
+        # Ensure space for day title + header
+        if current_y <= bottom_margin + 60:
+            current_y = new_page_with_title()
+
+        # Day title
+        c.setFont(day_font, day_size)
+        c.drawString(left_margin, current_y, day_title)
+        current_y -= 18
+
+        # Table header
+        header_height = table_leading + 4
+        if current_y - header_height <= bottom_margin:
+            current_y = new_page_with_title()
+            c.setFont(day_font, day_size)
+            c.drawString(left_margin, current_y, day_title)
+            current_y -= 18
+
+        c.setFont(table_header_font, table_header_size)
+        # Header bounding line
+        c.line(left_margin, current_y, page_width - right_margin, current_y)
+        header_bottom_y = current_y - header_height
+        c.line(left_margin, header_bottom_y, page_width - right_margin, header_bottom_y)
+        # Vertical lines for columns
+        c.line(col1_x, current_y, col1_x, header_bottom_y)
+        c.line(col2_x, current_y, col2_x, header_bottom_y)
+        c.line(col3_x, current_y, col3_x, header_bottom_y)
+        c.line(page_width - right_margin, current_y, page_width - right_margin, header_bottom_y)
+
+        # Header labels
+        text_y = current_y - (header_height - table_leading) / 2 - 2
+        c.drawString(col1_x + 2, text_y, "Meal #")
+        c.drawString(col2_x + 2, text_y, "Meal description")
+        c.drawString(col3_x + 2, text_y, "Approx kcal & macros")
+
+        current_y = header_bottom_y
+
+        # Table body rows
+        c.setFont(table_body_font, table_body_size)
+        for meal_no, desc, macros in rows:
+            # Wrap each cell
+            meal_lines = wrap_text(meal_no, table_body_font, table_body_size, col1_width - 4)
+            desc_lines = wrap_text(desc, table_body_font, table_body_size, col2_width - 4)
+            macros_lines = wrap_text(macros, table_body_font, table_body_size, col3_width - 4)
+
+            num_lines = max(len(meal_lines), len(desc_lines), len(macros_lines))
+            row_height = num_lines * table_leading + 4
+
+            # New page if needed
+            if current_y - row_height <= bottom_margin:
+                current_y = new_page_with_title()
+                # Redraw day title and header on new page (continuation)
+                c.setFont(day_font, day_size)
+                c.drawString(left_margin, current_y, f"{day_title} (cont.)")
+                current_y -= 18
+
+                # Header again
+                header_height = table_leading + 4
+                c.setFont(table_header_font, table_header_size)
+                c.line(left_margin, current_y, page_width - right_margin, current_y)
+                header_bottom_y = current_y - header_height
+                c.line(left_margin, header_bottom_y, page_width - right_margin, header_bottom_y)
+                c.line(col1_x, current_y, col1_x, header_bottom_y)
+                c.line(col2_x, current_y, col2_x, header_bottom_y)
+                c.line(col3_x, current_y, col3_x, header_bottom_y)
+                c.line(page_width - right_margin, current_y, page_width - right_margin, header_bottom_y)
+
+                text_y = current_y - (header_height - table_leading) / 2 - 2
+                c.drawString(col1_x + 2, text_y, "Meal #")
+                c.drawString(col2_x + 2, text_y, "Meal description")
+                c.drawString(col3_x + 2, text_y, "Approx kcal & macros")
+
+                current_y = header_bottom_y
+                c.setFont(table_body_font, table_body_size)
+
+            # Draw row lines
+            row_top_y = current_y
+            row_bottom_y = current_y - row_height
+            c.line(left_margin, row_top_y, page_width - right_margin, row_top_y)
+            c.line(left_margin, row_bottom_y, page_width - right_margin, row_bottom_y)
+            c.line(col1_x, row_top_y, col1_x, row_bottom_y)
+            c.line(col2_x, row_top_y, col2_x, row_bottom_y)
+            c.line(col3_x, row_top_y, col3_x, row_bottom_y)
+            c.line(page_width - right_margin, row_top_y, page_width - right_margin, row_bottom_y)
+
+            # Draw text inside row
+            row_text_y = row_top_y - 2 - table_leading
+            for idx in range(num_lines):
+                if idx < len(meal_lines):
+                    c.drawString(col1_x + 2, row_text_y, meal_lines[idx])
+                if idx < len(desc_lines):
+                    c.drawString(col2_x + 2, row_text_y, desc_lines[idx])
+                if idx < len(macros_lines):
+                    c.drawString(col3_x + 2, row_text_y, macros_lines[idx])
+                row_text_y -= table_leading
+
+            current_y = row_bottom_y
+
+        current_y -= 18  # Space after each day's table
+
+    # --- Leftover text (summaries, grocery list, etc.) as plain text ---
+
+    if leftover_lines:
+        # New page if we're tight on space
+        if current_y <= bottom_margin + 40:
+            current_y = new_page_with_title()
+
+        c.setFont(body_font, body_size)
+        c.setFillGray(0)
+        text_obj = c.beginText()
+        text_obj.setTextOrigin(left_margin, current_y)
+        text_obj.setFont(body_font, body_size)
+        text_obj.setLeading(body_leading)
+
+        for raw_line in leftover_lines:
+            # Wrap long lines to fit page width
+            wrapped_lines = wrap_text(raw_line, body_font, body_size, usable_width)
+            for line in wrapped_lines:
+                if text_obj.getY() <= bottom_margin:
+                    c.drawText(text_obj)
+                    current_y = new_page_with_title()
+                    text_obj = c.beginText()
+                    text_obj.setTextOrigin(left_margin, current_y)
+                    text_obj.setFont(body_font, body_size)
+                    text_obj.setLeading(body_leading)
+                text_obj.textLine(line)
+
+        c.drawText(text_obj)
+
     c.showPage()
     c.save()
 
     pdf_bytes = buffer.getvalue()
     buffer.close()
     return pdf_bytes
-
 
 # ---------- STREAMLIT UI ----------
 
@@ -814,4 +1075,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
