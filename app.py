@@ -155,7 +155,8 @@ CLINICAL DIET PATTERN: Cardiac diet for CHF with reduced ejection fraction.
 - Emphasize high-fiber, low-sodium foods; minimize processed and canned foods.
 - Avoid obviously salty foods (chips, fries, cured meats, canned soups, frozen dinners with high sodium).
 - Fluid restriction: target total fluid intake of {limit_txt} per day (all beverages, soups, and liquid foods count).
-- Include a simple suggested fluid schedule over the day (morning / afternoon / evening).
+  Standard CHF guidance is ~1.5 liters (1500 mL/day), unless otherwise individualized.
+- Include a simple suggested fluid schedule over the day (for example morning / afternoon / evening allowances).
 """
     elif diet_pattern == "Diabetic":
         clinical_note = """
@@ -170,22 +171,25 @@ CLINICAL DIET PATTERN: Diabetic diet for active diabetes.
 CLINICAL DIET PATTERN: Renal diet for ESRD or CKD stage 4–5 (general guidance, not individualized).
 - Limit sodium and highly processed foods.
 - Avoid very high potassium foods in large amounts (bananas, oranges, potatoes, tomatoes, spinach, avocados, etc.).
-- Limit high phosphorus foods (colas, processed foods, some dairy, organ meats).
+- Limit high phosphorus foods (colas, many processed foods, some dairy, organ meats).
 - Use moderate portions of protein; avoid extremely high-protein fad diets unless on dialysis and advised otherwise.
 - Prefer lower-potassium fruits and vegetables and simple home-cooked meals over restaurant / fast-food when possible.
 """
 
-    # Fast-food instructions
+    # Fast-food instructions – real menu items + slightly high price estimates
     fast_food_note = ""
     if fast_food_chains and fast_food_percent > 0:
         chains_txt = ", ".join(fast_food_chains)
         fast_food_note = f"""
-FAST-FOOD / TAKEOUT PATTERN:
-- Patient allows some meals from these fast-food chains: {chains_txt}.
+FAST-FOOD / TAKEOUT PATTERN (REAL MENU ITEMS ONLY):
+- Patient is okay with using some meals from these fast-food chains: {chains_txt}.
 - Aim for roughly {fast_food_percent}% of total weekly meals to be from fast-food or takeout.
-- Not every day has to include fast-food; spread it across the week in a realistic way.
-- For each fast-food meal, specify the restaurant, item name, and approximate calories, protein, carbs, fat, and sodium.
-- Choose options that best fit the macro targets and any clinical diet constraints above.
+- Use ONLY real menu items that actually exist or have existed on the standard menu at those chains
+  (for example: grilled chicken sandwiches, burrito bowls, egg white breakfast sandwiches, salads from known chains).
+- Prefer core, long-running menu items rather than limited-time specials to reduce error.
+- For each fast-food meal, specify the restaurant and exact item name.
+- For each item, provide approximate calories, protein, carbohydrates, fat, and sodium using best available knowledge.
+- If you are unsure about a very specific item, choose a different well-known item from the same restaurant that you know better.
 """
 
     # Meal timing note
@@ -216,18 +220,20 @@ COOKING VS PREMADE:
 - Reuse ingredients across cooked and premade meals to save time and reduce waste.
 """
 
-    # Pricing disclaimer block
+    # Pricing note – estimates only, biased upward for restaurants
     pricing_note = f"""
 PRICING AND GROCERY COST (ESTIMATES ONLY):
-- All prices in the grocery list must be estimated averages, not real-time retailer data.
-- Prices vary by location, availability, sales, and inflation.
-- When multiple stores are listed, choose ONE store to base estimates on.
-- Include estimated unit price and line total for each grocery item.
-- Provide estimated daily and weekly cost.
-- Try to stay near a weekly budget of ${weekly_budget:.2f}, but rounding is fine.
+- All prices are approximate and must NOT use real-time data from any retailer or restaurant.
+- Base grocery prices on typical U.S. supermarket averages.
+- For restaurant / fast-food meals, estimate prices slightly higher than historical national averages
+  (roughly 10–25 percent higher) to reflect current prices and regional variation.
+- When multiple preferred stores are listed, you may choose one primary store and assume most items are purchased there.
+- For each grocery list item, include an estimated unit price and a line total.
+- Provide an estimated total grocery cost for the week and an overall weekly food cost including any fast-food meals.
+- Try to keep the weekly total near ${weekly_budget:.2f}, but approximations are acceptable.
 """
 
-    # FINAL PROMPT
+    # Final prompt
     return f"""
 {lang_note}
 
@@ -808,3 +814,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
