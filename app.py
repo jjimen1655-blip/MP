@@ -678,6 +678,45 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
 
         c.drawText(text_obj)
 
+    # ---------- Disclaimer Section ----------
+    disclaimer_text = (
+        "DISCLAIMER:\n"
+        "This meal plan is for educational purposes only and does not constitute medical or nutritional advice. "
+        "The author is not a registered dietitian or licensed nutrition professional. "
+        "Calorie estimates, macro calculations, and grocery suggestions may be inaccurate or inappropriate "
+        "for individuals with specific medical conditions. "
+        "Patients should consult with a licensed healthcare provider or registered dietitian for personalized "
+        "medical or nutritional guidance. "
+        "If you have concerns about dietary restrictions, chronic illness, allergies, weight management, "
+        "or nutritional needs, please speak with a registered dietitian."
+    )
+
+    # Add a little space before the disclaimer
+    current_y -= 20
+    if current_y <= bottom_margin + 40:
+        current_y = new_page_with_title()
+
+    c.setFont(body_font, body_size)
+    text_obj = c.beginText()
+    text_obj.setTextOrigin(left_margin, current_y)
+    text_obj.setFont(body_font, body_size)
+    text_obj.setLeading(body_leading)
+
+    # Draw the disclaimer, wrapped to the page width
+    for line in disclaimer_text.split("\n"):
+        wrapped = wrap_text(line, body_font, body_size, usable_width)
+        for w in wrapped:
+            if text_obj.getY() <= bottom_margin:
+                c.drawText(text_obj)
+                current_y = new_page_with_title()
+                text_obj = c.beginText()
+                text_obj.setTextOrigin(left_margin, current_y)
+                text_obj.setFont(body_font, body_size)
+                text_obj.setLeading(body_leading)
+            text_obj.textLine(w)
+
+    c.drawText(text_obj)
+
     # Do NOT add an extra showPage() here; just save the current page.
     c.save()
 
@@ -1077,6 +1116,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
