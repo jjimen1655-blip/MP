@@ -677,7 +677,8 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
                 text_obj.textLine(line)
 
         c.drawText(text_obj)
-
+        # Sync current_y with where the leftover text actually ended
+        current_y = text_obj.getY()
     # ---------- Disclaimer Section ----------
     disclaimer_text = (
         "DISCLAIMER:\n"
@@ -1116,6 +1117,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
