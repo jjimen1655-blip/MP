@@ -314,6 +314,9 @@ At the end of the 14 days, include:
 1) A rough estimated daily calorie and macro summary per day for the primary individual.
 2) A rough estimated daily and total 14-day cost (grocery + fast-food if used), plus a rough per-week average.
 3) A combined grocery list grouped by category:
+   Before listing categories, include ONE concise line:
+   "This 14-day grocery list is scaled to feed approximately {household_size} people."
+   Then list categories:
    - Produce
    - Protein
    - Dairy
@@ -1164,3 +1167,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
