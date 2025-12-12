@@ -165,6 +165,7 @@ CLINICAL DIET PATTERN: Diabetic diet for active diabetes.
 - Prefer low–glycemic index carbohydrates (beans, lentils, whole grains, non-starchy vegetables).
 - Avoid sugary drinks, juice, desserts; minimize refined carbs and added sugars.
 - Pair carbohydrates with protein and/or fat to reduce postprandial glucose spikes.
+- Prioritize a zero carb first meal to avoid insulin spikes after first meal.
 """
     elif diet_pattern == "Renal (ESRD / CKD 4-5)":
         clinical_note = """
@@ -273,6 +274,10 @@ Additional requirements:
 - Respect the clinical diet pattern if one is specified.
 
 OUTPUT FORMAT (plain text, no markdown tables):
+IMPORTANT RESTRICTIONS (MANDATORY):
+You MUST NOT include optional commentary, explanations, tips, recipe suggestions, or offers for additional help.
+Do NOT include phrases such as "If you would like…" or similar.
+Only output the required meal plan, macros, costs, summaries, and grocery list exactly in the format shown.
 
 Day 1
 - Main meal 1: ...
@@ -1117,6 +1122,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
