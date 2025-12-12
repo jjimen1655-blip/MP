@@ -397,9 +397,10 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
     Turn plain text into a multi-page PDF with real tables for the daily meals.
     It looks for patterns like:
 
-    Day 1
+    Day 1 / Día 1
     - Main meal 1: ...
       Approx: X kcal, P: Y g, C: Z g, F: W g
+      (or "Aproximado:" in Spanish)
 
     and converts them into rows:
     Meal # | Meal description | Approx kcal & macros
@@ -445,7 +446,6 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
         words = text_line.split()
         if not words:
             return [""]
-
         lines = []
         current = words[0]
         for word in words[1:]:
@@ -464,10 +464,9 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
         Parse the raw text into a structure:
         [
           {
-            "day_title": "Day 1",
+            "day_title": "Day 1" or "Día 1",
             "rows": [
               ("Meal 1", "Main meal 1: ...", "Approx: X kcal, P: ..."),
-              ("Meal 2", "Snack 1: ...", "Approx: ..."),
               ...
             ]
           },
@@ -484,13 +483,17 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
         current_day = None
         current_rows = []
 
+        # Support both English and Spanish markers
+        day_prefixes = ("Day ", "Día ", "Dia ")
+        macros_prefixes = ("Approx:", "Aproximado:", "Aprox:")
+
         i = 0
         while i < len(lines):
             raw = lines[i]
             line = raw.strip()
 
-            # Detect "Day X" header
-            if line.startswith("Day "):
+            # Detect "Day X" / "Día X"
+            if any(line.startswith(p) for p in day_prefixes):
                 if current_day is not None:
                     days.append({"day_title": current_day, "rows": current_rows})
                     current_rows = []
@@ -500,11 +503,11 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
                 i += 1
                 continue
 
-            # Detect *meal* bullets, but ONLY if they have an "Approx:" line after them
+            # Detect *meal* bullets, but ONLY if they have a macros line after them
             if current_day is not None and line.startswith("- "):
                 desc = line[2:].strip()
 
-                # Look ahead for an "Approx:" line
+                # Look ahead for a macros line (Approx / Aproximado)
                 macros_line = ""
                 macros_idx = None
                 j = i + 1
@@ -512,9 +515,9 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
                     look_raw = lines[j]
                     look = look_raw.strip()
                     # Stop if we hit next meal or next day
-                    if look.startswith("- ") or look.startswith("Day "):
+                    if look.startswith("- ") or any(look.startswith(p) for p in day_prefixes):
                         break
-                    if look.startswith("Approx:"):
+                    if any(look.startswith(p) for p in macros_prefixes):
                         macros_line = look
                         macros_idx = j
                         break
@@ -721,21 +724,33 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
                 text_obj.textLine(line)
 
         c.drawText(text_obj)
-        # Sync current_y with where the leftover text actually ended
         current_y = text_obj.getY()
 
-    # ---------- Disclaimer Section ----------
-    disclaimer_text = (
-        "DISCLAIMER:\n"
-        "This meal plan is for educational purposes only and does not constitute medical or nutritional advice. "
-        "The author is not a registered dietitian or licensed nutrition professional. "
-        "Calorie estimates, macro calculations, and grocery suggestions may be inaccurate or inappropriate "
-        "for individuals with specific medical conditions. "
-        "Patients should consult with a licensed healthcare provider or registered dietitian for personalized "
-        "medical or nutritional guidance. "
-        "If you have concerns about dietary restrictions, chronic illness, allergies, weight management, "
-        "or nutritional needs, please speak with a registered dietitian."
-    )
+    # ---------- Disclaimer Section (language-specific) ----------
+    if "Spanish" in title or "Español" in title:
+        disclaimer_text = (
+            "DESCARGO DE RESPONSABILIDAD:\n"
+            "Este plan de alimentación es sólo para fines educativos y no constituye asesoramiento médico ni nutricional. "
+            "El autor no es un dietista registrado ni un profesional de la nutrición autorizado. "
+            "Las estimaciones de calorías, los cálculos de macronutrientes y las sugerencias de compras pueden ser "
+            "inexactas o no apropiadas para personas con condiciones médicas específicas. "
+            "Los pacientes deben consultar con un proveedor de atención médica autorizado o con un dietista registrado "
+            "para recibir recomendaciones médicas o nutricionales personalizadas. "
+            "Si tiene dudas sobre restricciones dietéticas, enfermedades crónicas, alergias, control de peso "
+            "o necesidades nutricionales, hable con un dietista registrado."
+        )
+    else:
+        disclaimer_text = (
+            "DISCLAIMER:\n"
+            "This meal plan is for educational purposes only and does not constitute medical or nutritional advice. "
+            "The author is not a registered dietitian or licensed nutrition professional. "
+            "Calorie estimates, macro calculations, and grocery suggestions may be inaccurate or inappropriate "
+            "for individuals with specific medical conditions. "
+            "Patients should consult with a licensed healthcare provider or registered dietitian for personalized "
+            "medical or nutritional guidance. "
+            "If you have concerns about dietary restrictions, chronic illness, allergies, weight management, "
+            "or nutritional needs, please speak with a registered dietitian."
+        )
 
     # Add a little space before the disclaimer
     current_y -= 20
@@ -763,13 +778,10 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
 
     c.drawText(text_obj)
 
-    # Do NOT add an extra showPage() here; just save the current page.
     c.save()
-
     pdf_bytes = buffer.getvalue()
     buffer.close()
     return pdf_bytes
-
 
 # ---------- STREAMLIT UI ----------
 
@@ -1179,5 +1191,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
