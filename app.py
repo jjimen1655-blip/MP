@@ -235,6 +235,17 @@ HOUSEHOLD / FAMILY MEAL SCALING:
 - For fast-food meals, specify what the household orders, but macros apply to the primary individual's portion.
 """
 
+    # Portion disclaimer shown ONLY when household size > 1
+    portion_disclaimer = ""
+    if household_size and household_size > 1:
+        portion_disclaimer = f"""
+IMPORTANT PORTION DISCLAIMER:
+All calorie estimates, macro calculations, and portion recommendations in this plan apply ONLY to the primary individual.
+Meals may be prepared in larger quantities to feed the household ({household_size} people), but the additional portions
+are intended solely for other household members and may be divided however they choose.
+This plan does NOT provide nutritional guidance or portion sizing for non-primary household members.
+"""
+
     # Pricing note – estimates only, biased upward for restaurants
     two_week_budget = weekly_budget * 2.0
     pricing_note = f"""
@@ -294,6 +305,8 @@ Additional requirements:
 - Assume typical adult portion sizes; you may approximate macros.
 - Respect the clinical diet pattern if one is specified.
 
+{portion_disclaimer}
+
 OUTPUT FORMAT (plain text, no markdown tables):
 IMPORTANT RESTRICTIONS (MANDATORY):
 You MUST NOT include optional commentary, explanations, tips, recipe suggestions, or offers for additional help.
@@ -329,7 +342,6 @@ At the end of the 14 days, include:
 PRICE DISCLAIMER:
 All prices are estimates only and NOT real-time retailer data. Actual prices vary by store and region.
 """
-
 
 def generate_meal_plan_with_ai(
     macros: MacroResult,
@@ -1167,4 +1179,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
