@@ -132,6 +132,7 @@ def build_mealplan_prompt(
     big_meals_per_day: int,
     snacks_per_day: int,
     prep_style: str,
+    household_size: int,
 ):
     # Language instructions for the model
     if language == "Spanish":
@@ -221,17 +222,33 @@ COOKING VS PREMADE:
 - Reuse ingredients across cooked and premade meals to save time and reduce waste.
 """
 
+    # Household / family-planning note
+    household_note = ""
+    if household_size and household_size > 1:
+        household_note = f"""
+HOUSEHOLD / FAMILY MEAL SCALING:
+- The calorie and macro targets apply ONLY to the primary individual.
+- Meals and recipes should be planned so they reasonably feed approximately {household_size} people.
+- Portions may be scaled (for example: cook 4 chicken breasts instead of 1).
+- Grocery quantities and total cost MUST reflect feeding about {household_size} people.
+- Macro estimates MUST reflect ONLY the primary individual's portion.
+- For fast-food meals, specify what the household orders, but macros apply to the primary individual's portion.
+"""
+
     # Pricing note – estimates only, biased upward for restaurants
+    two_week_budget = weekly_budget * 2.0
     pricing_note = f"""
 PRICING AND GROCERY COST (ESTIMATES ONLY):
 - All prices are approximate and must NOT use real-time data from any retailer or restaurant.
 - Base grocery prices on typical U.S. supermarket averages.
 - For restaurant / fast-food meals, estimate prices slightly higher than historical national averages
   (roughly 10–25 percent higher) to reflect current prices and regional variation.
+- Weekly grocery budget is approximately ${weekly_budget:.2f} for the household (about {household_size} people).
+- You are planning for 14 days (2 weeks), so try to keep the total 14-day food cost (groceries + fast-food)
+  near ${two_week_budget:.2f} for the household.
 - When multiple preferred stores are listed, you may choose one primary store and assume most items are purchased there.
 - For each grocery list item, include an estimated unit price and a line total.
-- Provide an estimated total grocery cost for the week and an overall weekly food cost including any fast-food meals.
-- Try to keep the weekly total near ${weekly_budget:.2f}, but approximations are acceptable.
+- Provide an estimated total grocery cost for all 14 days and a rough per-week average cost.
 """
 
     # Final prompt
@@ -240,7 +257,7 @@ PRICING AND GROCERY COST (ESTIMATES ONLY):
 
 You are a registered dietitian and meal-planning assistant.
 
-MACRO TARGETS (PER DAY):
+MACRO TARGETS (PER DAY) FOR PRIMARY INDIVIDUAL:
 - Daily calories: {macros.target_kcal:.0f} kcal
 - Protein: {macros.protein_g:.0f} g/day
 - Carbohydrates: {macros.carbs_g:.0f} g/day
@@ -249,22 +266,26 @@ MACRO TARGETS (PER DAY):
 PATIENT CONSTRAINTS:
 - Allergies / must AVOID: {allergies or "none specified"}
 - Foods to avoid / dislikes: {dislikes or "none specified"}
-- Weekly grocery budget: ${weekly_budget:.2f} for all 7 days
+- Household size to feed with meals and groceries: {household_size}
+- Weekly grocery budget: ${weekly_budget:.2f} (for the whole household)
 - Preferred grocery store or market: {preferred_store or "generic US supermarket"}
 
 {clinical_note}
 {fast_food_note}
 {meal_timing_note}
 {prep_note}
+{household_note}
 {pricing_note}
 
 MEAL PLAN TASK:
-Create a 14-day meal plan for a single adult based on the macro targets and constraints above.
+Create a 14-day meal plan for a single adult (the primary individual) based on the macro targets and constraints above.
+Plan meals and grocery quantities so they can reasonably feed the whole household (about {household_size} people),
+but keep all calorie and macro estimates focused on the primary individual's portion only.
 
 STRUCTURE:
 - For each day, include exactly {big_meals_per_day} main meal(s) and {snacks_per_day} snack time(s).
 - Label them clearly (for example: Breakfast, Lunch, Dinner, Snack 1, Snack 2).
-- Distribute calories and macros so that totals for the day roughly match the macro targets.
+- Distribute calories and macros so that totals for the day roughly match the macro targets for the primary individual.
 
 Additional requirements:
 - Keep recipes simple and realistic for a busy person.
@@ -290,8 +311,8 @@ Day 1
 Repeat for Days 1–14.
 
 At the end of the 14 days, include:
-1) A rough estimated daily calorie and macro summary per day.
-2) A rough estimated daily and weekly cost (grocery + fast-food if used).
+1) A rough estimated daily calorie and macro summary per day for the primary individual.
+2) A rough estimated daily and total 14-day cost (grocery + fast-food if used), plus a rough per-week average.
 3) A combined grocery list grouped by category:
    - Produce
    - Protein
@@ -321,6 +342,7 @@ def generate_meal_plan_with_ai(
     big_meals_per_day: int,
     snacks_per_day: int,
     prep_style: str,
+    household_size: int,
 ) -> str:
     prompt = build_mealplan_prompt(
         macros=macros,
@@ -336,6 +358,7 @@ def generate_meal_plan_with_ai(
         big_meals_per_day=big_meals_per_day,
         snacks_per_day=snacks_per_day,
         prep_style=prep_style,
+        household_size=household_size,
     )
 
     completion = client.chat.completions.create(
@@ -451,7 +474,7 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
             raw = lines[i]
             line = raw.strip()
 
-            # Detect "Day X" header (or "Día X" etc. if you later localize)
+            # Detect "Day X" header
             if line.startswith("Day "):
                 if current_day is not None:
                     days.append({"day_title": current_day, "rows": current_rows})
@@ -481,11 +504,12 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
                         macros_idx = j
                         break
                     j += 1
+
                 # If there is NO macros line, this bullet is not a meal row.
-                # Leave it as leftover text.
                 if not macros_line:
                     i += 1
                     continue
+
                 # Otherwise, treat as a meal row
                 used_indices.add(i)
                 if macros_idx is not None:
@@ -684,6 +708,7 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
         c.drawText(text_obj)
         # Sync current_y with where the leftover text actually ended
         current_y = text_obj.getY()
+
     # ---------- Disclaimer Section ----------
     disclaimer_text = (
         "DISCLAIMER:\n"
@@ -729,6 +754,7 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
     pdf_bytes = buffer.getvalue()
     buffer.close()
     return pdf_bytes
+
 
 # ---------- STREAMLIT UI ----------
 
@@ -877,7 +903,7 @@ def main():
     dislikes = st.text_input("Foods to avoid / dislikes", placeholder="e.g., mushrooms, cilantro")
     preferred_store = st.text_input("Preferred market/store", placeholder="e.g., H-E-B, Costco, Walmart")
     weekly_budget = st.number_input(
-        "Weekly grocery budget (USD)",
+        "Weekly grocery budget (USD) for the household",
         min_value=10.0,
         max_value=1000.0,
         value=120.0,
@@ -1045,6 +1071,21 @@ def main():
         help="Guides how many meals rely on cooking vs ready-to-eat store items."
     )
 
+    # 9. Household / family planning
+    st.subheader("9. Household / family planning")
+
+    household_size = st.number_input(
+        "How many people will be eating most of these meals?",
+        min_value=1,
+        max_value=10,
+        value=1,
+        step=1,
+        help=(
+            "Macros and calorie targets remain for ONE primary individual. "
+            "Meals and grocery quantities will be scaled to feed this many people."
+        ),
+    )
+
     submitted = st.button("Calculate macros and generate meal plan")
 
     if submitted:
@@ -1076,7 +1117,7 @@ def main():
             st.write(f"- Carbs: {macros.carbs_g:.0f} g ({macros.carbs_pct:.1f}% kcal)")
 
         st.divider()
-        st.subheader("AI-Generated 7-Day Meal Plan")
+        st.subheader("AI-Generated 14-Day Meal Plan")
 
         with st.spinner("Calling AI to generate your meal plan..."):
             try:
@@ -1094,6 +1135,7 @@ def main():
                     big_meals_per_day=big_meals_per_day,
                     snacks_per_day=snacks_per_day,
                     prep_style=prep_style,
+                    household_size=household_size,
                 )
                 st.session_state["plan_text"] = plan_text
                 st.session_state["plan_language"] = language
@@ -1122,16 +1164,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-
