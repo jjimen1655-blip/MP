@@ -133,6 +133,7 @@ def build_mealplan_prompt(
     snacks_per_day: int,
     prep_style: str,
     household_size: int,
+    meal_prep_style: str,
 ):
     # Language instructions for the model
     if language == "Spanish":
@@ -222,6 +223,24 @@ COOKING VS PREMADE:
 - Reuse ingredients across cooked and premade meals to save time and reduce waste.
 """
 
+    # Variety vs bulk meal prep note
+    if meal_prep_style == "Bulk meal prep / repeat same meals for several days":
+        variety_note = """
+MEAL VARIETY VS BULK PREP:
+- The patient prefers batch cooking and simple repetition.
+- Structure the 14-day plan so that the SAME set of meals is typically repeated for 2–3 days in a row
+  (for example, Days 1–3 use the same Breakfast/Lunch/Dinner/Snacks, then Days 4–6 use a new set, etc.).
+- Prioritize meals that reheat well and can be cooked in large batches.
+- Reuse the same recipes across multiple days to minimize the total number of different meals in the plan.
+"""
+    else:
+        variety_note = """
+MEAL VARIETY VS BULK PREP:
+- The patient prefers more variety day-to-day.
+- Aim for reasonable variety across the 14 days, but you may still reuse some meals for practicality.
+- Try to avoid repeating the exact same main meal more than 2 days in a row unless it clearly helps with simplicity.
+"""
+
     # Household / family-planning note
     household_note = ""
     if household_size and household_size > 1:
@@ -285,6 +304,7 @@ PATIENT CONSTRAINTS:
 {fast_food_note}
 {meal_timing_note}
 {prep_note}
+{variety_note}
 {household_note}
 {pricing_note}
 
@@ -358,6 +378,7 @@ def generate_meal_plan_with_ai(
     snacks_per_day: int,
     prep_style: str,
     household_size: int,
+    meal_prep_style: str,
 ) -> str:
     prompt = build_mealplan_prompt(
         macros=macros,
@@ -374,6 +395,7 @@ def generate_meal_plan_with_ai(
         snacks_per_day=snacks_per_day,
         prep_style=prep_style,
         household_size=household_size,
+        meal_prep_style=meal_prep_style,
     )
 
     completion = client.chat.completions.create(
@@ -1113,6 +1135,22 @@ def main():
         ),
     )
 
+    # 10. Variety vs meal prep style
+    st.subheader("10. Variety vs meal prep style")
+
+    meal_prep_style = st.selectbox(
+        "How should the plan handle variety?",
+        options=[
+            "Varied meals each day",
+            "Bulk meal prep / repeat same meals for several days",
+        ],
+        index=0,
+        help=(
+            "Choose 'Bulk meal prep' for patients who prefer cooking large batches and "
+            "eating the same meals for 2–3 days in a row."
+        ),
+    )
+
     submitted = st.button("Calculate macros and generate meal plan")
 
     if submitted:
@@ -1163,6 +1201,7 @@ def main():
                     snacks_per_day=snacks_per_day,
                     prep_style=prep_style,
                     household_size=household_size,
+                    meal_prep_style=meal_prep_style,
                 )
                 st.session_state["plan_text"] = plan_text
                 st.session_state["plan_language"] = language
@@ -1191,6 +1230,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
