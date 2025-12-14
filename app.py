@@ -1,7 +1,6 @@
 import os
 from dataclasses import dataclass
 from typing import Literal, Optional
-from io import BytesIO
 
 import streamlit as st
 from openai import OpenAI
@@ -12,10 +11,7 @@ from reportlab.pdfbase import pdfmetrics
 MODEL_NAME = "gpt-5-mini"
 
 # ---------- OPENAI CLIENT SETUP ----------
-# Prefer Streamlit secrets in the cloud, fall back to local env
 api_key = None
-
-# Try Streamlit Cloud secrets
 try:
     api_key = st.secrets["OPENAI_API_KEY"]
 except Exception:
@@ -26,12 +22,10 @@ if not api_key:
 
 client = OpenAI(api_key=api_key)
 
-
 # ---------- DATA STRUCTURES ----------
-
 Intensity = Literal["Gentle", "Moderate", "Aggressive"]
 GoalMode = Literal["Weight loss", "Maintenance", "Weight gain"]
-TrainingVolume = Literal["Moderate (3–4 days/week)", "High volume (5–6 days/week)"]  # NEW
+TrainingVolume = Literal["Moderate (3–4 days/week)", "High volume (5–6 days/week)"]
 
 
 @dataclass
@@ -48,7 +42,6 @@ class MacroResult:
 
 
 # ---------- CALCULATION LOGIC ----------
-
 def calculate_macros(
     sex: str,
     age: int,
@@ -64,7 +57,7 @@ def calculate_macros(
     surplus_kcal: float = 300.0,
     protein_g_per_kg: float = 1.4,
     fat_g_per_kg: float = 0.7,
-    carbs_g_per_kg_gain: Optional[float] = None,  # NEW (weight gain only)
+    carbs_g_per_kg_gain: Optional[float] = None,  # weight gain only
 ) -> MacroResult:
     """Calculate RMR, TDEE, target calories and macros using Mifflin-St Jeor."""
 
@@ -77,7 +70,7 @@ def calculate_macros(
     # 2) Estimated TDEE
     tdee = rmr * activity_factor
 
-    # 3) Choose maintenance baseline (estimated TDEE OR known maintenance)
+    # 3) Choose maintenance baseline
     if use_estimated_maintenance or (maintenance_kcal_known is None):
         maintenance_kcal = tdee
     else:
@@ -99,19 +92,18 @@ def calculate_macros(
     weight_for_macros = weight_current_kg if weight_source == "Current" else weight_goal_kg
 
     # Protein always from g/kg setting
-    protein_g = weight_for_macros * protein_g_per_kg
+    protein_g = weight_for_macros * float(protein_g_per_kg)
     kcal_protein = protein_g * 4
 
-    # --- NEW: Weight gain uses carbs g/kg (training-volume based), fat = remainder with clamp ---
+    # Weight gain uses carbs g/kg, fat remainder with clamp
     if goal_mode == "Weight gain" and carbs_g_per_kg_gain is not None:
         carbs_g = weight_for_macros * float(carbs_g_per_kg_gain)
         kcal_carbs = carbs_g * 4
 
-        # Fat is remainder
         fat_kcal = target_kcal - (kcal_protein + kcal_carbs)
         fat_g = fat_kcal / 9 if fat_kcal > 0 else 0.0
 
-        # Clamp fat to 0.6–1.0 g/kg; if clamped, carbs becomes remainder
+        # clamp fat to 0.6–1.0 g/kg; if clamped, carbs becomes remainder
         fat_min_g = 0.6 * weight_for_macros
         fat_max_g = 1.0 * weight_for_macros
 
@@ -129,10 +121,9 @@ def calculate_macros(
             kcal_fat = fat_g * 9
 
     else:
-        # Default behavior (loss + maintenance + fallback gain)
-        fat_g = weight_for_macros * fat_g_per_kg
+        # loss + maintenance + fallback gain: fat g/kg, carbs remainder
+        fat_g = weight_for_macros * float(fat_g_per_kg)
         kcal_fat = fat_g * 9
-
         kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0)
         carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
 
@@ -158,10 +149,10 @@ def calculate_macros(
 
 
 # ---------- AI MEAL PLAN GENERATION ----------
-
 def build_mealplan_prompt(
     macros: MacroResult,
     goal_mode: GoalMode,
+    using_glp1: bool,
     allergies: str,
     dislikes: str,
     preferred_store: str,
@@ -177,24 +168,19 @@ def build_mealplan_prompt(
     household_size: int,
     meal_prep_style: str,
 ):
-    # Language instructions for the model
     if language == "Spanish":
         lang_note = (
             "IMPORTANT: Responde TODO en español, incluyendo encabezados, etiquetas y descripciones. "
             "Usa un estilo claro y fácil de entender para pacientes."
         )
     else:
-        lang_note = (
-            "IMPORTANT: Respond entirely in English. "
-            "Use a clear, patient-friendly style."
-        )
+        lang_note = "IMPORTANT: Respond entirely in English. Use a clear, patient-friendly style."
 
-    # Goal mode note
     if goal_mode == "Maintenance":
         goal_note = """
 GOAL MODE: MAINTENANCE
 - The calorie target is meant to maintain current weight.
-- Prioritize nutrient-dense, “healthy” meals to reduce risk of micronutrient deficiencies (fiber, fruits/vegetables, adequate calcium/vitamin D sources, iron/folate sources, omega-3 sources).
+- Prioritize nutrient-dense meals to reduce risk of micronutrient deficiencies.
 - Keep meals realistic for a busy person and do not introduce extreme restrictions unless a medical diet pattern is selected.
 """
     elif goal_mode == "Weight gain":
@@ -212,7 +198,75 @@ GOAL MODE: WEIGHT LOSS
 - Keep meals nutrient-dense and high-protein to support satiety and preserve lean mass.
 """
 
-    # Clinical diet instructions
+    glp1_note = ""
+    if using_glp1:
+        glp1_note = """
+GLP-1 RECEPTOR AGONIST–SPECIFIC CONSIDERATIONS:
+The patient is actively using a GLP-1 receptor agonist (for diabetes and/or weight loss).
+
+MACRONUTRIENT PRIORITY:
+- Protein intake has been intentionally set higher to preserve lean mass during reduced caloric intake.
+- Emphasize high-quality, leucine-rich protein sources distributed across the day.
+
+SUPPLEMENTATION (INCLUDE A DAILY SUPPLEMENT SECTION IN THE PLAN):
+
+1. Protein Supplement (FOUNDATIONAL)
+- Form: Whey isolate or high-quality plant blend
+- Dose: 20–40 g per serving
+- Priority: ≥2–3 g leucine per serving
+- Note: This is the single most important “supplement” on GLP-1 therapy.
+
+2. Multivitamin (Once Daily)
+- Rationale: Reduced caloric intake → micronutrient gaps (iron, B vitamins, zinc, selenium).
+- Choose one with:
+  • Iron (especially in premenopausal women)
+  • Vitamin B12 ≥ 25–100 mcg
+  • Zinc 8–15 mg
+  • Iodine 150 mcg
+- Note: Bariatric-style deficiencies can develop even without surgery.
+
+3. Vitamin B12
+- Why: Reduced intake + delayed gastric emptying; symptoms can be subtle (fatigue, neuropathy).
+- Dose: 500–1,000 mcg PO daily OR 1,000 mcg weekly
+- Especially important if also on metformin.
+
+4. Electrolytes (Sodium + Potassium)
+- Why: Reduced intake → lightheadedness, fatigue, headaches; nausea → dehydration.
+- Targets:
+  • Sodium: 2–3 g/day
+  • Potassium: 3–4 g/day (diet first)
+- Practical:
+  • 1 low-sugar electrolyte packet/day
+  • Add broth/salt if orthostasis present
+
+CONDITIONAL / COMMONLY NEEDED:
+
+5. Magnesium
+- Why: Constipation, muscle cramps, sleep issues
+- Dose: 200–400 mg nightly
+- Forms: glycinate, citrate
+
+6. Soluble Fiber
+- Why: GLP-1RAs slow motility → constipation; fiber intake often drops
+- Dose: 5–10 g/day, titrate slowly
+- Best options: psyllium husk; partially hydrolyzed guar gum
+- Avoid aggressive dosing early (bloating).
+
+7. Omega-3 Fatty Acids
+- Why: Anti-inflammatory; may help preserve lean mass during weight loss
+- Dose: 1–2 g EPA+DHA/day
+
+8. Vitamin D
+- Why: Deficiency common in obesity; fat loss unmasks low levels
+- Dose: 1,000–2,000 IU/day
+- Check 25-OH vitamin D if unsure
+
+9. Probiotic (Select Patients)
+- Why: GI symptoms, bloating, irregular stools
+- Choose: multi-strain (Lactobacillus + Bifidobacterium)
+- Trial: 4–8 weeks
+"""
+
     clinical_note = ""
     if diet_pattern == "Cardiac (CHF / low sodium)":
         limit_txt = f"{fluid_limit_l:.1f} L/day" if fluid_limit_l else "1.5–2.0 L/day"
@@ -222,8 +276,7 @@ CLINICAL DIET PATTERN: Cardiac diet for CHF with reduced ejection fraction.
 - Emphasize high-fiber, low-sodium foods; minimize processed and canned foods.
 - Avoid obviously salty foods (chips, fries, cured meats, canned soups, frozen dinners with high sodium).
 - Fluid restriction: target total fluid intake of {limit_txt} per day (all beverages, soups, and liquid foods count).
-  Standard CHF guidance is ~1.5 liters (1500 mL/day), unless otherwise individualized.
-- Include a simple suggested fluid schedule over the day (for example morning / afternoon / evening allowances).
+- Include a simple suggested fluid schedule over the day.
 """
     elif diet_pattern == "Diabetic":
         clinical_note = """
@@ -244,7 +297,6 @@ CLINICAL DIET PATTERN: Renal diet for ESRD or CKD stage 4–5 (general guidance,
 - Prefer lower-potassium fruits and vegetables and simple home-cooked meals over restaurant / fast-food when possible.
 """
 
-    # Fast-food instructions
     fast_food_note = ""
     if fast_food_chains and fast_food_percent > 0:
         chains_txt = ", ".join(fast_food_chains)
@@ -255,11 +307,9 @@ FAST-FOOD / TAKEOUT PATTERN (REAL MENU ITEMS ONLY):
 - Use ONLY real menu items that actually exist or have existed on the standard menu at those chains.
 - Prefer core, long-running menu items rather than limited-time specials to reduce error.
 - For each fast-food meal, specify the restaurant and exact item name.
-- For each item, provide approximate calories, protein, carbohydrates, fat, and sodium using best available knowledge.
-- If you are unsure about a very specific item, choose a different well-known item from the same restaurant that you know better.
+- For each item, provide approximate calories, protein, carbohydrates, fat, and sodium.
 """
 
-    # Meal timing note
     meal_timing_note = f"""
 MEAL TIMING PREFERENCES:
 - Target {big_meals_per_day} main meal(s) and {snacks_per_day} snack time(s) per day.
@@ -267,12 +317,11 @@ MEAL TIMING PREFERENCES:
 - Snacks should be lighter and help fill in remaining macros without overshooting daily targets.
 """
 
-    # Cooking vs premade
     if prep_style == "Mostly premade / ready-to-eat from store":
         prep_note = """
 COOKING VS PREMADE:
-- Prioritize ready-to-eat or minimal-prep items (rotisserie chicken, pre-cooked grains, frozen vegetables, bagged salads, etc.).
-- Avoid complicated recipes; most meals should be assembly or reheat rather than full scratch cooking.
+- Prioritize ready-to-eat or minimal-prep items (rotisserie chicken, pre-cooked grains, frozen vegetables, bagged salads).
+- Avoid complicated recipes; most meals should be assembly or reheat rather than scratch cooking.
 """
     elif prep_style == "Mostly home-cooked meals":
         prep_note = """
@@ -283,27 +332,24 @@ COOKING VS PREMADE:
     else:
         prep_note = """
 COOKING VS PREMADE:
-- Use a balanced mix of home-cooked meals, ready-to-eat items, and occasional fast-food or takeout.
-- Reuse ingredients across cooked and premade meals to save time and reduce waste.
+- Use a balanced mix of home-cooked meals, ready-to-eat items, and occasional fast-food/takeout.
+- Reuse ingredients across meals to save time and reduce waste.
 """
 
-    # Variety vs bulk meal prep note
     if meal_prep_style == "Bulk meal prep / repeat same meals for several days":
         variety_note = """
 MEAL VARIETY VS BULK PREP:
-- The patient prefers batch cooking and simple repetition.
 - Repeat the SAME set of meals for 2–3 days in a row when practical.
 - Prioritize meals that reheat well and can be cooked in large batches.
 """
     else:
         variety_note = """
 MEAL VARIETY VS BULK PREP:
-- The patient prefers more variety day-to-day.
 - Aim for reasonable variety across the 14 days, but you may still reuse some meals for practicality.
 """
 
-    # Household / family-planning note
     household_note = ""
+    portion_disclaimer = ""
     if household_size and household_size > 1:
         household_note = f"""
 HOUSEHOLD / FAMILY MEAL SCALING:
@@ -312,25 +358,19 @@ HOUSEHOLD / FAMILY MEAL SCALING:
 - Grocery quantities and total cost MUST reflect feeding about {household_size} people.
 - Macro estimates MUST reflect ONLY the primary individual's portion.
 """
-
-    # Portion disclaimer shown ONLY when household size > 1
-    portion_disclaimer = ""
-    if household_size and household_size > 1:
         portion_disclaimer = f"""
 IMPORTANT PORTION DISCLAIMER:
 All calorie estimates, macro calculations, and portion recommendations in this plan apply ONLY to the primary individual.
 Meals may be prepared in larger quantities to feed the household ({household_size} people), but macros apply only to the primary individual's portion.
 """
 
-    # Pricing note
     two_week_budget = weekly_budget * 2.0
     pricing_note = f"""
 PRICING AND GROCERY COST (ESTIMATES ONLY):
 - All prices are approximate and must NOT use real-time data from any retailer or restaurant.
 - Base grocery prices on typical U.S. supermarket averages.
-- For restaurant / fast-food meals, estimate prices slightly higher than historical national averages (roughly 10–25 percent higher).
 - Weekly grocery budget is approximately ${weekly_budget:.2f} for the household (about {household_size} people).
-- You are planning for 14 days (2 weeks), so try to keep the total 14-day food cost near ${two_week_budget:.2f} for the household.
+- You are planning for 14 days (2 weeks), so try to keep the total 14-day food cost near ${two_week_budget:.2f}.
 - For each grocery list item, include an estimated unit price and a line total.
 - Provide an estimated total grocery cost for all 14 days and a rough per-week average cost.
 """
@@ -341,6 +381,7 @@ PRICING AND GROCERY COST (ESTIMATES ONLY):
 You are a registered dietitian and meal-planning assistant.
 
 {goal_note}
+{glp1_note}
 
 MACRO TARGETS (PER DAY) FOR PRIMARY INDIVIDUAL:
 - Daily calories: {macros.target_kcal:.0f} kcal
@@ -421,6 +462,7 @@ All prices are estimates only and NOT real-time retailer data. Actual prices var
 def generate_meal_plan_with_ai(
     macros: MacroResult,
     goal_mode: GoalMode,
+    using_glp1: bool,
     allergies: str,
     dislikes: str,
     preferred_store: str,
@@ -439,6 +481,7 @@ def generate_meal_plan_with_ai(
     prompt = build_mealplan_prompt(
         macros=macros,
         goal_mode=goal_mode,
+        using_glp1=using_glp1,
         allergies=allergies,
         dislikes=dislikes,
         preferred_store=preferred_store,
@@ -458,35 +501,17 @@ def generate_meal_plan_with_ai(
     completion = client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
-            {
-                "role": "system",
-                "content": "You are a precise, practical meal-planning assistant for evidence-based weight management.",
-            },
+            {"role": "system", "content": "You are a precise, practical meal-planning assistant for evidence-based weight management."},
             {"role": "user", "content": prompt},
         ],
     )
-
     return completion.choices[0].message.content
 
 
-# ---------- PDF GENERATION ----------
-# (UNCHANGED - keeping your full PDF function exactly as-is)
-
+# ---------- PDF GENERATION (UNCHANGED) ----------
 def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
     """
-    Turn plain text into a multi-page PDF with real tables for the daily meals.
-    It looks for patterns like:
-
-    Day 1 / Día 1
-    - Main meal 1: ...
-      Approx: X kcal, P: Y g, C: Z g, F: W g
-      (or "Aproximado:" in Spanish)
-
-    and converts them into rows:
-    Meal # | Meal description | Approx kcal & macros
-
-    Any remaining text (summaries, grocery list, etc.) is rendered as
-    plain wrapped text after the tables.
+    Your PDF function (unchanged).
     """
     from io import BytesIO
     from reportlab.lib.pagesizes import letter
@@ -504,7 +529,6 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
 
     usable_width = page_width - left_margin - right_margin
 
-    # Fonts / sizes
     title_font = "Helvetica-Bold"
     title_size = 14
     day_font = "Helvetica-Bold"
@@ -806,17 +830,21 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
 
 
 # ---------- STREAMLIT UI ----------
-
 def main():
-    st.set_page_config(
-        page_title="Evidence-Based Macro & Meal Planner",
-        layout="centered"
-    )
+    st.set_page_config(page_title="Evidence-Based Macro & Meal Planner", layout="centered")
 
     st.title("Personalized Meal Planning for the busy clinician")
     st.write("Enter metrics and personal preferences below")
 
-    # 0) MODE SELECTOR (NEW)
+    # Initialize session state for protein/fat so we can change them dynamically
+    if "protein_g_per_kg" not in st.session_state:
+        st.session_state["protein_g_per_kg"] = 1.4
+    if "fat_g_per_kg" not in st.session_state:
+        st.session_state["fat_g_per_kg"] = 0.7
+    if "using_glp1" not in st.session_state:
+        st.session_state["using_glp1"] = False
+
+    # 0) MODE SELECTOR
     goal_mode: GoalMode = st.selectbox(
         "Mode",
         options=["Weight loss", "Maintenance", "Weight gain"],
@@ -824,98 +852,39 @@ def main():
         help="Select weight loss, maintenance, or weight gain."
     )
 
-    # 1. Patient / User Info
+    # 1) Patient / User Info
     st.subheader("1. Patient / User Info")
-
     col1, col2 = st.columns(2)
 
-    # ---- COLUMN 1: SEX, AGE, HEIGHT ----
     with col1:
         sex = st.selectbox("Sex", options=["M", "F"])
         age = st.number_input("Age (years)", min_value=12, max_value=100, value=30)
 
-        height_unit = st.radio(
-            "Height units",
-            options=["cm", "ft/in"],
-            index=1,
-            horizontal=True,
-        )
-
+        height_unit = st.radio("Height units", options=["cm", "ft/in"], index=1, horizontal=True)
         if height_unit == "cm":
-            height_cm = st.number_input(
-                "Height (cm)",
-                min_value=120.0,
-                max_value=230.0,
-                value=170.0,
-            )
+            height_cm = st.number_input("Height (cm)", min_value=120.0, max_value=230.0, value=170.0)
         else:
-            height_ft = st.number_input(
-                "Height (feet)",
-                min_value=3,
-                max_value=7,
-                value=5,
-            )
-            height_in = st.number_input(
-                "Height (inches)",
-                min_value=0,
-                max_value=11,
-                value=6,
-            )
+            height_ft = st.number_input("Height (feet)", min_value=3, max_value=7, value=5)
+            height_in = st.number_input("Height (inches)", min_value=0, max_value=11, value=6)
             height_cm = height_ft * 30.48 + height_in * 2.54
             st.caption(f"Calculated height: {height_cm:.1f} cm")
 
-    # ---- COLUMN 2: WEIGHT (KG OR LBS) ----
     with col2:
-        weight_unit = st.radio(
-            "Weight units",
-            options=["kg", "lbs"],
-            index=1,
-            horizontal=True,
-        )
-
+        weight_unit = st.radio("Weight units", options=["kg", "lbs"], index=1, horizontal=True)
         if weight_unit == "kg":
-            weight_current_kg = st.number_input(
-                "Current weight (kg)",
-                min_value=30.0,
-                max_value=300.0,
-                value=70.0,
-            )
-            weight_goal_kg = st.number_input(
-                "Goal weight (kg)",
-                min_value=30.0,
-                max_value=300.0,
-                value=65.0,
-            )
+            weight_current_kg = st.number_input("Current weight (kg)", min_value=30.0, max_value=300.0, value=70.0)
+            weight_goal_kg = st.number_input("Goal weight (kg)", min_value=30.0, max_value=300.0, value=65.0)
         else:
-            weight_current_lbs = st.number_input(
-                "Current weight (lbs)",
-                min_value=60.0,
-                max_value=660.0,
-                value=154.0,
-            )
-            weight_goal_lbs = st.number_input(
-                "Goal weight (lbs)",
-                min_value=60.0,
-                max_value=660.0,
-                value=143.0,
-            )
-
+            weight_current_lbs = st.number_input("Current weight (lbs)", min_value=60.0, max_value=660.0, value=154.0)
+            weight_goal_lbs = st.number_input("Goal weight (lbs)", min_value=60.0, max_value=660.0, value=143.0)
             weight_current_kg = weight_current_lbs / 2.20462
             weight_goal_kg = weight_goal_lbs / 2.20462
+            st.caption(f"Current weight: {weight_current_kg:.1f} kg\nGoal weight: {weight_goal_kg:.1f} kg")
 
-            st.caption(
-                f"Current weight: {weight_current_kg:.1f} kg\n"
-                f"Goal weight: {weight_goal_kg:.1f} kg"
-            )
+        weight_source = st.selectbox("Weight used for macros", options=["Current", "Goal"])
 
-        weight_source = st.selectbox(
-            "Weight used for macros",
-            options=["Current", "Goal"]
-        )
-
-    # 2. Activity & Maintenance Settings (UPDATED)
+    # 2) Activity & Maintenance Settings
     st.subheader("2. Activity & Maintenance Settings")
-
     activity_factor = st.number_input(
         "Activity factor",
         min_value=1.1,
@@ -942,7 +911,6 @@ def main():
             step=50.0,
         )
 
-    # Weight-loss intensity only if weight loss mode
     intensity: Optional[Intensity] = None
     if goal_mode == "Weight loss":
         intensity = st.selectbox(
@@ -951,11 +919,9 @@ def main():
             help="Gentle ≈250 kcal/day deficit, Moderate ≈500, Aggressive ≈750."
         )
 
-    # Weight-gain surplus only if weight gain mode
     surplus_kcal = 300.0
     if goal_mode == "Weight gain":
         st.subheader("2b. Weight gain settings")
-
         surplus_kcal = st.number_input(
             "Daily calorie surplus (kcal/day)",
             min_value=100.0,
@@ -964,61 +930,128 @@ def main():
             step=50.0,
             help="Typical evidence-based surplus: +250–500 kcal/day."
         )
-
-        # Guardrails
-        est_gain_kg_per_week = (surplus_kcal * 7) / 7700.0  # rough
+        est_gain_kg_per_week = (surplus_kcal * 7) / 7700.0
         st.caption(f"Estimated gain from surplus: ~{est_gain_kg_per_week:.2f} kg/week (rough estimate).")
-
-        # Recommended 0.25–0.5% BW/week
         min_gain = float(weight_current_kg) * 0.0025
         max_gain = float(weight_current_kg) * 0.005
         st.caption(f"Recommended gain range: ~{min_gain:.2f} to {max_gain:.2f} kg/week (0.25–0.5% BW/week).")
 
-    # 3. Macro Settings
+    # 5) Clinical diet pattern (moved ABOVE macros so GLP-1 can drive protein min/max)
+    st.subheader("5. Clinical diet pattern (optional)")
+    diet_pattern = st.selectbox(
+        "Apply a medical diet template",
+        options=["None", "Cardiac (CHF / low sodium)", "Diabetic", "Renal (ESRD / CKD 4-5)"],
+        help="Adds extra constraints to the meal plan but keeps your macros as a guide."
+    )
+
+    fluid_limit_l = None
+    if "Cardiac" in diet_pattern:
+        fluid_limit_l = st.number_input(
+            "Daily fluid limit (liters)",
+            min_value=0.5,
+            max_value=4.0,
+            value=1.5,
+            step=0.25,
+            help="Typical CHF fluid restriction is around 1.5–2.0 L/day; adjust per patient."
+        )
+
+    # NEW: GLP-1 checkbox available ALL THE TIME, with question-mark help
+    glp1_help = (
+        "Check this if the patient is using a GLP-1 receptor agonist.\n\n"
+        "Examples:\n"
+        "- Semaglutide (Ozempic®, Wegovy®, Rybelsus®)\n"
+        "- Tirzepatide (Mounjaro®, Zepbound®)\n"
+        "- Liraglutide (Victoza®, Saxenda®)\n"
+        "- Dulaglutide (Trulicity®)\n"
+        "- Exenatide (Byetta®, Bydureon®)\n"
+        "- Lixisenatide (Adlyxin®)\n"
+    )
+
+    using_glp1 = st.checkbox(
+        "Using a GLP-1 receptor agonist (GLP-1RA)",
+        key="using_glp1",
+        help=glp1_help
+    )
+
+    # If GLP-1 is checked, force protein floor behavior immediately (visible)
+    # and set a sensible starting value if currently below 1.6.
+    if using_glp1:
+        if st.session_state["protein_g_per_kg"] < 1.6:
+            st.session_state["protein_g_per_kg"] = 1.6
+
+    # 3) Macro Settings (moved BELOW diet + GLP-1)
     st.subheader("3. Macro Settings (g/kg)")
 
-    # Mode-specific defaults
-    default_protein = 1.4
-    default_fat = 0.7
-    protein_help = "Evidence-supported weight loss range: 1.2–1.6 g/kg."
-    fat_help = "Common clinical range: 0.5–1.0 g/kg."
+    # Protein bounds depend on GLP-1 selection
+    if using_glp1:
+        protein_min = 1.6
+        protein_max = 2.0
+        protein_help = "GLP-1RA selected: protein is locked to a minimum of 1.6 g/kg and can be increased up to 2.0 g/kg."
+    else:
+        protein_min = 0.8
+        protein_max = 2.5
+        if goal_mode == "Weight gain":
+            protein_help = "Weight gain evidence-based range: 1.6–2.2 g/kg/day."
+        elif goal_mode == "Maintenance":
+            protein_help = "Maintenance: choose a reasonable protein target; adjust for training."
+        else:
+            protein_help = "Evidence-supported weight loss range: 1.2–1.6 g/kg."
 
+    # Fat defaults (keep your prior defaults)
     if goal_mode == "Weight gain":
-        default_protein = 1.8
         default_fat = 0.8
-        protein_help = "Weight gain evidence-based range: 1.6–2.2 g/kg/day."
         fat_help = "Weight gain common range: 0.6–1.0 g/kg/day or ~20–30% of calories."
     elif goal_mode == "Maintenance":
-        default_protein = 1.4
         default_fat = 0.7
-        protein_help = "Maintenance: choose a reasonable protein target; adjust for training."
         fat_help = "Maintenance: typical clinical range is 0.5–1.0 g/kg."
+    else:
+        default_fat = 0.7
+        fat_help = "Common clinical range: 0.5–1.0 g/kg."
+
+    # If GLP-1 is OFF and protein session value is still the old default, set mode-specific default cleanly
+    if not using_glp1:
+        if goal_mode == "Weight gain" and abs(st.session_state["protein_g_per_kg"] - 1.4) < 1e-6:
+            st.session_state["protein_g_per_kg"] = 1.8
+        elif goal_mode == "Maintenance" and abs(st.session_state["protein_g_per_kg"] - 1.4) < 1e-6:
+            st.session_state["protein_g_per_kg"] = 1.4
+        elif goal_mode == "Weight loss" and abs(st.session_state["protein_g_per_kg"] - 1.4) < 1e-6:
+            st.session_state["protein_g_per_kg"] = 1.4
+
+    # Also ensure fat session state has a sensible value once per run
+    if "fat_initialized" not in st.session_state:
+        st.session_state["fat_g_per_kg"] = float(default_fat)
+        st.session_state["fat_initialized"] = True
 
     col3, col4 = st.columns(2)
     with col3:
         protein_g_per_kg = st.number_input(
             "Protein (g/kg for macro weight)",
-            min_value=0.8,
-            max_value=2.5,
-            value=float(default_protein),
+            min_value=float(protein_min),
+            max_value=float(protein_max),
+            value=float(st.session_state["protein_g_per_kg"]),
             step=0.1,
-            help=protein_help
+            help=protein_help,
+            key="protein_g_per_kg_input",
         )
+        # keep session state in sync
+        st.session_state["protein_g_per_kg"] = float(protein_g_per_kg)
+
     with col4:
         fat_g_per_kg = st.number_input(
             "Fat (g/kg for macro weight)",
             min_value=0.3,
             max_value=1.5,
-            value=float(default_fat),
+            value=float(st.session_state["fat_g_per_kg"]),
             step=0.1,
-            help=fat_help
+            help=fat_help,
+            key="fat_g_per_kg_input",
         )
+        st.session_state["fat_g_per_kg"] = float(fat_g_per_kg)
 
-    # NEW: training volume -> carbs g/kg (weight gain only)
+    # Weight gain carb target (training volume)
     carbs_g_per_kg_gain: Optional[float] = None
     if goal_mode == "Weight gain":
         st.subheader("3b. Weight gain carb target (training volume)")
-
         training_volume: TrainingVolume = st.selectbox(
             "Training volume (for carb target)",
             options=["Moderate (3–4 days/week)", "High volume (5–6 days/week)"],
@@ -1047,7 +1080,7 @@ def main():
             "clamped to 0.6–1.0 g/kg. If fat hits the clamp, carbs become the remainder to keep calories on target."
         )
 
-    # 4. Preferences
+    # 4) Preferences for AI Meal Plan
     st.subheader("4. Preferences for AI Meal Plan")
 
     allergies = st.text_input("Allergies (comma-separated)", placeholder="e.g., peanuts, shellfish")
@@ -1073,32 +1106,7 @@ def main():
         "Real-time pricing will be added once API access is approved."
     )
 
-    # 5. Clinical diet pattern
-    st.subheader("5. Clinical diet pattern (optional)")
-
-    diet_pattern = st.selectbox(
-        "Apply a medical diet template",
-        options=[
-            "None",
-            "Cardiac (CHF / low sodium)",
-            "Diabetic",
-            "Renal (ESRD / CKD 4-5)"
-        ],
-        help="Adds extra constraints to the meal plan but keeps your macros as a guide."
-    )
-
-    fluid_limit_l = None
-    if "Cardiac" in diet_pattern:
-        fluid_limit_l = st.number_input(
-            "Daily fluid limit (liters)",
-            min_value=0.5,
-            max_value=4.0,
-            value=1.5,
-            step=0.25,
-            help="Typical CHF fluid restriction is around 1.5–2.0 L/day; adjust per patient."
-        )
-
-    # 6. Fast-food options
+    # 6) Fast-food options
     st.subheader("6. Fast-food options (optional)")
 
     include_fast_food = st.checkbox(
@@ -1112,71 +1120,17 @@ def main():
         fast_food_chains = st.multiselect(
             "Allowed fast-food chains",
             options=[
-                "McDonald's",
-                "Chick-fil-A",
-                "Taco Bell",
-                "Subway",
-                "Chipotle",
-                "Wendy's",
-                "Burger King",
-                "Panera Bread",
-                "Starbucks",
-                "Five Guys",
-                "Whataburger",
-                "In-N-Out Burger",
-                "Jack in the Box",
-                "Sonic Drive-In",
-                "Carl's Jr.",
-                "Hardee's",
-                "Culver's",
-                "Smashburger",
-                "Rally's / Checkers",
-                "Freddy's Frozen Custard & Steakburgers",
-                "Steak 'n Shake",
-                "KFC",
-                "Popeyes",
-                "Raising Cane's",
-                "Church's Chicken",
-                "Zaxby's",
-                "Wingstop",
-                "Bojangles",
-                "El Pollo Loco",
-                "Domino's",
-                "Pizza Hut",
-                "Papa John's",
-                "Little Caesars",
-                "Marco's Pizza",
-                "Papa Murphy's",
-                "Blaze Pizza",
-                "MOD Pizza",
-                "Jimmy John's",
-                "Jersey Mike's",
-                "Firehouse Subs",
-                "Which Wich",
-                "Potbelly",
-                "Qdoba",
-                "Del Taco",
-                "Taco Cabana",
-                "Moe's Southwest Grill",
-                "Baja Fresh",
-                "Dunkin'",
-                "Tim Hortons",
-                "Einstein Bros Bagels",
-                "Krispy Kreme",
-                "Dutch Bros Coffee",
-                "Long John Silver's",
-                "Captain D's",
-                "Wienerschnitzel",
-                "Nathan's Famous",
-                "Dairy Queen",
-                "Baskin Robbins",
-                "Cold Stone Creamery",
-                "Ben & Jerry's",
-                "Panda Express",
-                "Arby's",
-                "Shake Shack",
-                "Noodles & Company",
-                "Jollibee",
+                "McDonald's", "Chick-fil-A", "Taco Bell", "Subway", "Chipotle", "Wendy's", "Burger King",
+                "Panera Bread", "Starbucks", "Five Guys", "Whataburger", "In-N-Out Burger", "Jack in the Box",
+                "Sonic Drive-In", "Carl's Jr.", "Hardee's", "Culver's", "Smashburger", "Rally's / Checkers",
+                "Freddy's Frozen Custard & Steakburgers", "Steak 'n Shake", "KFC", "Popeyes", "Raising Cane's",
+                "Church's Chicken", "Zaxby's", "Wingstop", "Bojangles", "El Pollo Loco", "Domino's", "Pizza Hut",
+                "Papa John's", "Little Caesars", "Marco's Pizza", "Papa Murphy's", "Blaze Pizza", "MOD Pizza",
+                "Jimmy John's", "Jersey Mike's", "Firehouse Subs", "Which Wich", "Potbelly", "Qdoba", "Del Taco",
+                "Taco Cabana", "Moe's Southwest Grill", "Baja Fresh", "Dunkin'", "Tim Hortons",
+                "Einstein Bros Bagels", "Krispy Kreme", "Dutch Bros Coffee", "Long John Silver's", "Captain D's",
+                "Wienerschnitzel", "Nathan's Famous", "Dairy Queen", "Baskin Robbins", "Cold Stone Creamery",
+                "Ben & Jerry's", "Panda Express", "Arby's", "Shake Shack", "Noodles & Company", "Jollibee",
             ],
             help="The AI can substitute some meals with items from these places."
         )
@@ -1192,26 +1146,13 @@ def main():
             help="This is a rough target; the plan will approximate this share of meals."
         )
 
-    # 7. Meal timing
+    # 7) Meal timing
     st.subheader("7. Meal timing (optional)")
+    big_meals_per_day = st.selectbox("Number of main meals per day", options=[1, 2, 3], index=2)
+    snacks_per_day = st.selectbox("Number of snack times per day", options=[0, 1, 2, 3], index=2)
 
-    big_meals_per_day = st.selectbox(
-        "Number of main meals per day",
-        options=[1, 2, 3],
-        index=2,
-        help="For example, choose 2 if they prefer something like brunch + dinner."
-    )
-
-    snacks_per_day = st.selectbox(
-        "Number of snack times per day",
-        options=[0, 1, 2, 3],
-        index=2,
-        help="Snacks will be lighter and used to fill in remaining macros."
-    )
-
-    # 8. Cooking vs premade balance
+    # 8) Cooking vs premade balance
     st.subheader("8. Cooking vs premade balance")
-
     prep_style = st.selectbox(
         "Preferred style",
         options=[
@@ -1219,38 +1160,22 @@ def main():
             "Mostly premade / ready-to-eat from store",
             "Mostly home-cooked meals",
         ],
-        help="Guides how many meals rely on cooking vs ready-to-eat store items."
     )
 
-    # 9. Household / family planning
+    # 9) Household / family planning
     st.subheader("9. Household / family planning")
-
     household_size = st.number_input(
         "How many people will be eating most of these meals?",
-        min_value=1,
-        max_value=10,
-        value=1,
-        step=1,
-        help=(
-            "Macros and calorie targets remain for ONE primary individual. "
-            "Meals and grocery quantities will be scaled to feed this many people."
-        ),
+        min_value=1, max_value=10, value=1, step=1,
+        help="Macros/calorie targets remain for ONE primary individual; quantities scaled for household."
     )
 
-    # 10. Variety vs meal prep style
+    # 10) Variety vs meal prep style
     st.subheader("10. Variety vs meal prep style")
-
     meal_prep_style = st.selectbox(
         "How should the plan handle variety?",
-        options=[
-            "Varied meals each day",
-            "Bulk meal prep / repeat same meals for several days",
-        ],
+        options=["Varied meals each day", "Bulk meal prep / repeat same meals for several days"],
         index=0,
-        help=(
-            "Choose 'Bulk meal prep' for patients who prefer cooking large batches and "
-            "eating the same meals for 2–3 days in a row."
-        ),
     )
 
     submitted = st.button("Calculate macros and generate meal plan")
@@ -1269,9 +1194,9 @@ def main():
             use_estimated_maintenance=use_estimated_maintenance,
             maintenance_kcal_known=maintenance_kcal_known,
             surplus_kcal=surplus_kcal if goal_mode == "Weight gain" else 0.0,
-            protein_g_per_kg=float(protein_g_per_kg),
-            fat_g_per_kg=float(fat_g_per_kg),
-            carbs_g_per_kg_gain=carbs_g_per_kg_gain,  # NEW
+            protein_g_per_kg=float(st.session_state["protein_g_per_kg"]),
+            fat_g_per_kg=float(st.session_state["fat_g_per_kg"]),
+            carbs_g_per_kg_gain=carbs_g_per_kg_gain,
         )
 
         st.success("Calculated macros successfully.")
@@ -1296,6 +1221,7 @@ def main():
                 plan_text = generate_meal_plan_with_ai(
                     macros=macros,
                     goal_mode=goal_mode,
+                    using_glp1=using_glp1,
                     allergies=allergies,
                     dislikes=dislikes,
                     preferred_store=preferred_store,
