@@ -31,6 +31,7 @@ client = OpenAI(api_key=api_key)
 
 Intensity = Literal["Gentle", "Moderate", "Aggressive"]
 GoalMode = Literal["Weight loss", "Maintenance", "Weight gain"]
+TrainingVolume = Literal["Moderate (3–4 days/week)", "High volume (5–6 days/week)"]  # NEW
 
 
 @dataclass
@@ -63,6 +64,7 @@ def calculate_macros(
     surplus_kcal: float = 300.0,
     protein_g_per_kg: float = 1.4,
     fat_g_per_kg: float = 0.7,
+    carbs_g_per_kg_gain: Optional[float] = None,  # NEW (weight gain only)
 ) -> MacroResult:
     """Calculate RMR, TDEE, target calories and macros using Mifflin-St Jeor."""
 
@@ -94,20 +96,45 @@ def calculate_macros(
         target_kcal = max(maintenance_kcal + float(surplus_kcal), 1200)
 
     # 5) Macros based on chosen weight
-    if weight_source == "Current":
-        weight_for_macros = weight_current_kg
-    else:
-        weight_for_macros = weight_goal_kg
+    weight_for_macros = weight_current_kg if weight_source == "Current" else weight_goal_kg
 
+    # Protein always from g/kg setting
     protein_g = weight_for_macros * protein_g_per_kg
-    fat_g = weight_for_macros * fat_g_per_kg
-
     kcal_protein = protein_g * 4
-    kcal_fat = fat_g * 9
 
-    # Carbs = remaining calories (simple + consistent with your existing logic)
-    kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0)
-    carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0
+    # --- NEW: Weight gain uses carbs g/kg (training-volume based), fat = remainder with clamp ---
+    if goal_mode == "Weight gain" and carbs_g_per_kg_gain is not None:
+        carbs_g = weight_for_macros * float(carbs_g_per_kg_gain)
+        kcal_carbs = carbs_g * 4
+
+        # Fat is remainder
+        fat_kcal = target_kcal - (kcal_protein + kcal_carbs)
+        fat_g = fat_kcal / 9 if fat_kcal > 0 else 0.0
+
+        # Clamp fat to 0.6–1.0 g/kg; if clamped, carbs becomes remainder
+        fat_min_g = 0.6 * weight_for_macros
+        fat_max_g = 1.0 * weight_for_macros
+
+        if fat_g < fat_min_g:
+            fat_g = fat_min_g
+            kcal_fat = fat_g * 9
+            kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0)
+            carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
+        elif fat_g > fat_max_g:
+            fat_g = fat_max_g
+            kcal_fat = fat_g * 9
+            kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0)
+            carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
+        else:
+            kcal_fat = fat_g * 9
+
+    else:
+        # Default behavior (loss + maintenance + fallback gain)
+        fat_g = weight_for_macros * fat_g_per_kg
+        kcal_fat = fat_g * 9
+
+        kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0)
+        carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
 
     # Percentages
     if target_kcal > 0:
@@ -175,6 +202,7 @@ GOAL MODE: MAINTENANCE
 GOAL MODE: WEIGHT GAIN
 - The calorie target already includes a surplus for weight gain.
 - Prioritize lean mass support: adequate protein distribution across the day, sufficient carbohydrates for training performance, and fats for hormonal support.
+- Carbohydrates were targeted using a training-volume g/kg guideline; keep carbs supportive of training performance.
 - Avoid “dirty bulk” patterns (excess ultra-processed foods); keep choices mostly nutrient-dense.
 """
     else:
@@ -986,6 +1014,39 @@ def main():
             help=fat_help
         )
 
+    # NEW: training volume -> carbs g/kg (weight gain only)
+    carbs_g_per_kg_gain: Optional[float] = None
+    if goal_mode == "Weight gain":
+        st.subheader("3b. Weight gain carb target (training volume)")
+
+        training_volume: TrainingVolume = st.selectbox(
+            "Training volume (for carb target)",
+            options=["Moderate (3–4 days/week)", "High volume (5–6 days/week)"],
+            index=0,
+            help="Sets a carbohydrate g/kg target to support training performance and muscle gain."
+        )
+
+        if training_volume.startswith("Moderate"):
+            default_carbs_gkg = 3.5
+            carbs_min, carbs_max = 3.0, 4.0
+        else:
+            default_carbs_gkg = 5.0
+            carbs_min, carbs_max = 4.0, 6.0
+
+        carbs_g_per_kg_gain = st.slider(
+            "Carbohydrates (g/kg/day) for weight gain",
+            min_value=float(carbs_min),
+            max_value=float(carbs_max),
+            value=float(default_carbs_gkg),
+            step=0.1,
+            help="Moderate training: 3–4 g/kg. High volume: 4–6 g/kg."
+        )
+
+        st.caption(
+            "Note: In Weight Gain mode, carbs are targeted first (g/kg) and fat becomes the remainder, "
+            "clamped to 0.6–1.0 g/kg. If fat hits the clamp, carbs become the remainder to keep calories on target."
+        )
+
     # 4. Preferences
     st.subheader("4. Preferences for AI Meal Plan")
 
@@ -1210,6 +1271,7 @@ def main():
             surplus_kcal=surplus_kcal if goal_mode == "Weight gain" else 0.0,
             protein_g_per_kg=float(protein_g_per_kg),
             fat_g_per_kg=float(fat_g_per_kg),
+            carbs_g_per_kg_gain=carbs_g_per_kg_gain,  # NEW
         )
 
         st.success("Calculated macros successfully.")
