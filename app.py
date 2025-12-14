@@ -9,8 +9,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
 
-MODEL_NAME = "gpt-4.1-mini"
-
+MODEL_NAME = "gpt-5-mini"
 # ---------- OPENAI CLIENT SETUP ----------
 
 # Prefer Streamlit secrets in the cloud, fall back to local env
@@ -135,7 +134,7 @@ def build_mealplan_prompt(
     household_size: int,
     meal_prep_style: str,
 ):
-    # Language instructions for the model
+    # Language instructions for the 
     if language == "Spanish":
         lang_note = (
             "IMPORTANT: Responde TODO en español, incluyendo encabezados, etiquetas y descripciones. "
@@ -1230,3 +1229,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
