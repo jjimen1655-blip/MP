@@ -10,6 +10,60 @@ from reportlab.pdfbase import pdfmetrics
 
 MODEL_NAME = "gpt-5-mini"
 
+# ---------- TEXT NORMALIZATION ----------
+def normalize_text_for_parsing(text: str) -> str:
+    """
+    Normalize common Unicode characters that frequently break parsing/PDF rendering:
+    - Dash variants (– — − etc.) -> "-"
+    - Curly quotes -> straight quotes
+    - NBSP -> space
+    - Ellipsis -> "..."
+    - Bullet chars -> "-"
+    """
+    replacements = {
+        # Dashes / hyphens / minus
+        "\u2010": "-",  # hyphen
+        "\u2011": "-",  # non-breaking hyphen
+        "\u2012": "-",  # figure dash
+        "\u2013": "-",  # en dash
+        "\u2014": "-",  # em dash
+        "\u2212": "-",  # minus sign
+        "\u00AD": "-",  # soft hyphen
+
+        # Quotes
+        "\u2018": "'",  # left single quote
+        "\u2019": "'",  # right single quote
+        "\u201C": '"',  # left double quote
+        "\u201D": '"',  # right double quote
+
+        # Spaces / punctuation
+        "\u00A0": " ",  # non-breaking space
+        "\u2026": "...",  # ellipsis
+
+        # Bullets
+        "\u2022": "-",  # bullet
+        "\u25CF": "-",  # black circle
+        "\u25E6": "-",  # white bullet
+        "\u2043": "-",  # hyphen bullet
+    }
+
+    for bad, good in replacements.items():
+        text = text.replace(bad, good)
+
+    # Normalize line starts that look like bullets but aren't "- "
+    # e.g. "• thing" -> "- thing"
+    fixed_lines = []
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith(("-", "*")) and not stripped.startswith("- "):
+            # "* item" -> "- item", "-" already handled but enforce spacing
+            stripped = stripped[1:].lstrip()
+            fixed_lines.append("- " + stripped)
+        else:
+            fixed_lines.append(line)
+    return "\n".join(fixed_lines)
+
+
 # ---------- OPENAI CLIENT SETUP ----------
 api_key = None
 try:
@@ -171,10 +225,14 @@ def build_mealplan_prompt(
     if language == "Spanish":
         lang_note = (
             "IMPORTANT: Responde TODO en español, incluyendo encabezados, etiquetas y descripciones. "
-            "Usa un estilo claro y fácil de entender para pacientes."
+            "Usa un estilo claro y fácil de entender para pacientes. "
+            "Usa SOLO guiones ASCII '-' para viñetas y rangos numéricos (por ejemplo: 500-1000)."
         )
     else:
-        lang_note = "IMPORTANT: Respond entirely in English. Use a clear, patient-friendly style."
+        lang_note = (
+            "IMPORTANT: Respond entirely in English. Use a clear, patient-friendly style. "
+            "Use ONLY standard ASCII hyphens '-' for bullets and numeric ranges (e.g., 500-1000)."
+        )
 
     if goal_mode == "Maintenance":
         goal_note = """
@@ -189,7 +247,7 @@ GOAL MODE: WEIGHT GAIN
 - The calorie target already includes a surplus for weight gain.
 - Prioritize lean mass support: adequate protein distribution across the day, sufficient carbohydrates for training performance, and fats for hormonal support.
 - Carbohydrates were targeted using a training-volume g/kg guideline; keep carbs supportive of training performance.
-- Avoid “dirty bulk” patterns (excess ultra-processed foods); keep choices mostly nutrient-dense.
+- Avoid "dirty bulk" patterns (excess ultra-processed foods); keep choices mostly nutrient-dense.
 """
     else:
         goal_note = """
@@ -201,7 +259,7 @@ GOAL MODE: WEIGHT LOSS
     glp1_note = ""
     if using_glp1:
         glp1_note = """
-GLP-1 RECEPTOR AGONIST–SPECIFIC CONSIDERATIONS:
+GLP-1 RECEPTOR AGONIST-SPECIFIC CONSIDERATIONS:
 The patient is actively using a GLP-1 receptor agonist (for diabetes and/or weight loss).
 
 MACRONUTRIENT PRIORITY:
@@ -212,64 +270,64 @@ SUPPLEMENTATION (INCLUDE A DAILY SUPPLEMENT SECTION IN THE PLAN):
 
 1. Protein Supplement (FOUNDATIONAL)
 - Form: Whey isolate or high-quality plant blend
-- Dose: 20–40 g per serving
-- Priority: ≥2–3 g leucine per serving
-- Note: This is the single most important “supplement” on GLP-1 therapy.
+- Dose: 20-40 g per serving
+- Priority: >=2-3 g leucine per serving
+- Note: This is the single most important "supplement" on GLP-1 therapy.
 
 2. Multivitamin (Once Daily)
-- Rationale: Reduced caloric intake → micronutrient gaps (iron, B vitamins, zinc, selenium).
+- Rationale: Reduced caloric intake -> micronutrient gaps (iron, B vitamins, zinc, selenium).
 - Choose one with:
-  • Iron (especially in premenopausal women)
-  • Vitamin B12 ≥ 25–100 mcg
-  • Zinc 8–15 mg
-  • Iodine 150 mcg
+  - Iron (especially in premenopausal women)
+  - Vitamin B12 >= 25-100 mcg
+  - Zinc 8-15 mg
+  - Iodine 150 mcg
 - Note: Bariatric-style deficiencies can develop even without surgery.
 
 3. Vitamin B12
 - Why: Reduced intake + delayed gastric emptying; symptoms can be subtle (fatigue, neuropathy).
-- Dose: 500–1,000 mcg PO daily OR 1,000 mcg weekly
+- Dose: 500-1,000 mcg PO daily OR 1,000 mcg weekly
 - Especially important if also on metformin.
 
 4. Electrolytes (Sodium + Potassium)
-- Why: Reduced intake → lightheadedness, fatigue, headaches; nausea → dehydration.
+- Why: Reduced intake -> lightheadedness, fatigue, headaches; nausea -> dehydration.
 - Targets:
-  • Sodium: 2–3 g/day
-  • Potassium: 3–4 g/day (diet first)
+  - Sodium: 2-3 g/day
+  - Potassium: 3-4 g/day (diet first)
 - Practical:
-  • 1 low-sugar electrolyte packet/day
-  • Add broth/salt if orthostasis present
+  - 1 low-sugar electrolyte packet/day
+  - Add broth/salt if orthostasis present
 
 CONDITIONAL / COMMONLY NEEDED:
 
 5. Magnesium
 - Why: Constipation, muscle cramps, sleep issues
-- Dose: 200–400 mg nightly
+- Dose: 200-400 mg nightly
 - Forms: glycinate, citrate
 
 6. Soluble Fiber
-- Why: GLP-1RAs slow motility → constipation; fiber intake often drops
-- Dose: 5–10 g/day, titrate slowly
+- Why: GLP-1RAs slow motility -> constipation; fiber intake often drops
+- Dose: 5-10 g/day, titrate slowly
 - Best options: psyllium husk; partially hydrolyzed guar gum
 - Avoid aggressive dosing early (bloating).
 
 7. Omega-3 Fatty Acids
 - Why: Anti-inflammatory; may help preserve lean mass during weight loss
-- Dose: 1–2 g EPA+DHA/day
+- Dose: 1-2 g EPA+DHA/day
 
 8. Vitamin D
 - Why: Deficiency common in obesity; fat loss unmasks low levels
-- Dose: 1,000–2,000 IU/day
+- Dose: 1,000-2,000 IU/day
 - Check 25-OH vitamin D if unsure
 
 9. Probiotic (Select Patients)
 - Why: GI symptoms, bloating, irregular stools
 - Choose: multi-strain (Lactobacillus + Bifidobacterium)
-- Trial: 4–8 weeks
+- Trial: 4-8 weeks
 """
 
     clinical_note = ""
     if diet_pattern == "Cardiac (CHF / low sodium)":
-        limit_txt = f"{fluid_limit_l:.1f} L/day" if fluid_limit_l else "1.5–2.0 L/day"
+        limit_txt = f"{fluid_limit_l:.1f} L/day" if fluid_limit_l else "1.5-2.0 L/day"
         clinical_note = f"""
 CLINICAL DIET PATTERN: Cardiac diet for CHF with reduced ejection fraction.
 - Sodium goal: generally < 2,000 mg/day.
@@ -282,14 +340,14 @@ CLINICAL DIET PATTERN: Cardiac diet for CHF with reduced ejection fraction.
         clinical_note = """
 CLINICAL DIET PATTERN: Diabetic diet for active diabetes.
 - Emphasize consistent, moderate carbohydrate intake spread throughout the day.
-- Prefer low–glycemic index carbohydrates (beans, lentils, whole grains, non-starchy vegetables).
+- Prefer low-glycemic index carbohydrates (beans, lentils, whole grains, non-starchy vegetables).
 - Avoid sugary drinks, juice, desserts; minimize refined carbs and added sugars.
 - Pair carbohydrates with protein and/or fat to reduce postprandial glucose spikes.
 - Prioritize a zero carb first meal to avoid insulin spikes after first meal.
 """
     elif diet_pattern == "Renal (ESRD / CKD 4-5)":
         clinical_note = """
-CLINICAL DIET PATTERN: Renal diet for ESRD or CKD stage 4–5 (general guidance, not individualized).
+CLINICAL DIET PATTERN: Renal diet for ESRD or CKD stage 4-5 (general guidance, not individualized).
 - Limit sodium and highly processed foods.
 - Avoid very high potassium foods in large amounts (bananas, oranges, potatoes, tomatoes, spinach, avocados, etc.).
 - Limit high phosphorus foods (colas, many processed foods, some dairy, organ meats).
@@ -339,7 +397,7 @@ COOKING VS PREMADE:
     if meal_prep_style == "Bulk meal prep / repeat same meals for several days":
         variety_note = """
 MEAL VARIETY VS BULK PREP:
-- Repeat the SAME set of meals for 2–3 days in a row when practical.
+- Repeat the SAME set of meals for 2-3 days in a row when practical.
 - Prioritize meals that reheat well and can be cooked in large batches.
 """
     else:
@@ -426,7 +484,7 @@ Additional requirements:
 OUTPUT FORMAT (plain text, no markdown tables):
 IMPORTANT RESTRICTIONS (MANDATORY):
 You MUST NOT include optional commentary, explanations, tips, recipe suggestions, or offers for additional help.
-Do NOT include phrases such as "If you would like…" or similar.
+Do NOT include phrases such as "If you would like..." or similar.
 Only output the required meal plan, macros, costs, summaries, and grocery list exactly in the format shown.
 
 Day 1
@@ -436,7 +494,7 @@ Day 1
 - Main meal 2: ...
 - Snack 2: ...
 
-Repeat for Days 1–14.
+Repeat for Days 1-14.
 
 At the end of the 14 days, include:
 1) A rough estimated daily calorie and macro summary per day for the primary individual.
@@ -501,11 +559,19 @@ def generate_meal_plan_with_ai(
     completion = client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
-            {"role": "system", "content": "You are a precise, practical meal-planning assistant for evidence-based weight management."},
+            {
+                "role": "system",
+                "content": (
+                    "You are a precise, practical meal-planning assistant for evidence-based weight management. "
+                    "Use only standard ASCII hyphens '-' for bullets and numeric ranges."
+                ),
+            },
             {"role": "user", "content": prompt},
         ],
     )
-    return completion.choices[0].message.content
+
+    raw_text = completion.choices[0].message.content or ""
+    return normalize_text_for_parsing(raw_text)
 
 
 # ---------- PDF GENERATION (UNCHANGED) ----------
@@ -1237,7 +1303,8 @@ def main():
                     household_size=household_size,
                     meal_prep_style=meal_prep_style,
                 )
-                st.session_state["plan_text"] = plan_text
+                # extra safety: normalize before storing
+                st.session_state["plan_text"] = normalize_text_for_parsing(plan_text)
                 st.session_state["plan_language"] = language
             except Exception as e:
                 st.error(f"Error generating meal plan: {e}")
@@ -1249,8 +1316,9 @@ def main():
         st.subheader("Current meal plan")
         st.text_area("Meal plan", plan_text, height=500)
 
+        # normalize again before PDF (defensive)
         pdf_bytes = create_pdf_from_text(
-            plan_text,
+            normalize_text_for_parsing(plan_text),
             title="Meal Plan (Spanish)" if plan_language == "Spanish" else "Meal Plan (English)",
         )
 
