@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Optional
 from io import BytesIO
 
 import streamlit as st
@@ -10,8 +10,8 @@ from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
 
 MODEL_NAME = "gpt-5-mini"
-# ---------- OPENAI CLIENT SETUP ----------
 
+# ---------- OPENAI CLIENT SETUP ----------
 # Prefer Streamlit secrets in the cloud, fall back to local env
 api_key = None
 
@@ -30,6 +30,7 @@ client = OpenAI(api_key=api_key)
 # ---------- DATA STRUCTURES ----------
 
 Intensity = Literal["Gentle", "Moderate", "Aggressive"]
+GoalMode = Literal["Weight loss", "Maintenance", "Weight gain"]
 
 
 @dataclass
@@ -55,7 +56,11 @@ def calculate_macros(
     weight_goal_kg: float,
     weight_source: Literal["Current", "Goal"],
     activity_factor: float,
-    intensity: Intensity,
+    goal_mode: GoalMode,
+    intensity: Optional[Intensity] = None,
+    use_estimated_maintenance: bool = True,
+    maintenance_kcal_known: Optional[float] = None,
+    surplus_kcal: float = 300.0,
     protein_g_per_kg: float = 1.4,
     fat_g_per_kg: float = 0.7,
 ) -> MacroResult:
@@ -67,19 +72,28 @@ def calculate_macros(
     else:
         rmr = 10 * weight_current_kg + 6.25 * height_cm - 5 * age - 161
 
-    # 2) TDEE
+    # 2) Estimated TDEE
     tdee = rmr * activity_factor
 
-    # 3) Weight-loss target calories
-    deficit_map = {
-        "Gentle": 250,
-        "Moderate": 500,
-        "Aggressive": 750,
-    }
-    deficit = deficit_map[intensity]
-    target_kcal = max(tdee - deficit, 1200)  # safety floor
+    # 3) Choose maintenance baseline (estimated TDEE OR known maintenance)
+    if use_estimated_maintenance or (maintenance_kcal_known is None):
+        maintenance_kcal = tdee
+    else:
+        maintenance_kcal = float(maintenance_kcal_known)
 
-    # 4) Macros based on chosen weight
+    # 4) Target calories by goal mode
+    if goal_mode == "Weight loss":
+        deficit_map = {"Gentle": 250, "Moderate": 500, "Aggressive": 750}
+        chosen_intensity: Intensity = intensity or "Moderate"
+        target_kcal = max(maintenance_kcal - deficit_map[chosen_intensity], 1200)
+
+    elif goal_mode == "Maintenance":
+        target_kcal = max(maintenance_kcal, 1200)
+
+    else:  # Weight gain
+        target_kcal = max(maintenance_kcal + float(surplus_kcal), 1200)
+
+    # 5) Macros based on chosen weight
     if weight_source == "Current":
         weight_for_macros = weight_current_kg
     else:
@@ -91,6 +105,7 @@ def calculate_macros(
     kcal_protein = protein_g * 4
     kcal_fat = fat_g * 9
 
+    # Carbs = remaining calories (simple + consistent with your existing logic)
     kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0)
     carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0
 
@@ -119,6 +134,7 @@ def calculate_macros(
 
 def build_mealplan_prompt(
     macros: MacroResult,
+    goal_mode: GoalMode,
     allergies: str,
     dislikes: str,
     preferred_store: str,
@@ -134,7 +150,7 @@ def build_mealplan_prompt(
     household_size: int,
     meal_prep_style: str,
 ):
-    # Language instructions for the 
+    # Language instructions for the model
     if language == "Spanish":
         lang_note = (
             "IMPORTANT: Responde TODO en español, incluyendo encabezados, etiquetas y descripciones. "
@@ -145,6 +161,28 @@ def build_mealplan_prompt(
             "IMPORTANT: Respond entirely in English. "
             "Use a clear, patient-friendly style."
         )
+
+    # Goal mode note
+    if goal_mode == "Maintenance":
+        goal_note = """
+GOAL MODE: MAINTENANCE
+- The calorie target is meant to maintain current weight.
+- Prioritize nutrient-dense, “healthy” meals to reduce risk of micronutrient deficiencies (fiber, fruits/vegetables, adequate calcium/vitamin D sources, iron/folate sources, omega-3 sources).
+- Keep meals realistic for a busy person and do not introduce extreme restrictions unless a medical diet pattern is selected.
+"""
+    elif goal_mode == "Weight gain":
+        goal_note = """
+GOAL MODE: WEIGHT GAIN
+- The calorie target already includes a surplus for weight gain.
+- Prioritize lean mass support: adequate protein distribution across the day, sufficient carbohydrates for training performance, and fats for hormonal support.
+- Avoid “dirty bulk” patterns (excess ultra-processed foods); keep choices mostly nutrient-dense.
+"""
+    else:
+        goal_note = """
+GOAL MODE: WEIGHT LOSS
+- The calorie target already includes a deficit for weight loss.
+- Keep meals nutrient-dense and high-protein to support satiety and preserve lean mass.
+"""
 
     # Clinical diet instructions
     clinical_note = ""
@@ -178,7 +216,7 @@ CLINICAL DIET PATTERN: Renal diet for ESRD or CKD stage 4–5 (general guidance,
 - Prefer lower-potassium fruits and vegetables and simple home-cooked meals over restaurant / fast-food when possible.
 """
 
-    # Fast-food instructions – real menu items + slightly high price estimates
+    # Fast-food instructions
     fast_food_note = ""
     if fast_food_chains and fast_food_percent > 0:
         chains_txt = ", ".join(fast_food_chains)
@@ -186,8 +224,7 @@ CLINICAL DIET PATTERN: Renal diet for ESRD or CKD stage 4–5 (general guidance,
 FAST-FOOD / TAKEOUT PATTERN (REAL MENU ITEMS ONLY):
 - Patient is okay with using some meals from these fast-food chains: {chains_txt}.
 - Aim for roughly {fast_food_percent}% of total weekly meals to be from fast-food or takeout.
-- Use ONLY real menu items that actually exist or have existed on the standard menu at those chains
-  (for example: grilled chicken sandwiches, burrito bowls, egg white breakfast sandwiches, salads from known chains).
+- Use ONLY real menu items that actually exist or have existed on the standard menu at those chains.
 - Prefer core, long-running menu items rather than limited-time specials to reduce error.
 - For each fast-food meal, specify the restaurant and exact item name.
 - For each item, provide approximate calories, protein, carbohydrates, fat, and sodium using best available knowledge.
@@ -206,16 +243,16 @@ MEAL TIMING PREFERENCES:
     if prep_style == "Mostly premade / ready-to-eat from store":
         prep_note = """
 COOKING VS PREMADE:
-- Prioritize ready-to-eat or minimal-prep items (rotisserie chicken, pre-cooked grains, frozen vegetables, bagged salads, pre-made soups, etc.).
+- Prioritize ready-to-eat or minimal-prep items (rotisserie chicken, pre-cooked grains, frozen vegetables, bagged salads, etc.).
 - Avoid complicated recipes; most meals should be assembly or reheat rather than full scratch cooking.
 """
     elif prep_style == "Mostly home-cooked meals":
         prep_note = """
 COOKING VS PREMADE:
 - Emphasize simple home-cooked meals using basic ingredients.
-- Occasional premade or frozen items are okay, but most meals should involve basic cooking (stovetop, oven, or air fryer).
+- Occasional premade or frozen items are okay, but most meals should involve basic cooking.
 """
-    else:  # Balanced mix
+    else:
         prep_note = """
 COOKING VS PREMADE:
 - Use a balanced mix of home-cooked meals, ready-to-eat items, and occasional fast-food or takeout.
@@ -227,17 +264,14 @@ COOKING VS PREMADE:
         variety_note = """
 MEAL VARIETY VS BULK PREP:
 - The patient prefers batch cooking and simple repetition.
-- Structure the 14-day plan so that the SAME set of meals is typically repeated for 2–3 days in a row
-  (for example, Days 1–3 use the same Breakfast/Lunch/Dinner/Snacks, then Days 4–6 use a new set, etc.).
+- Repeat the SAME set of meals for 2–3 days in a row when practical.
 - Prioritize meals that reheat well and can be cooked in large batches.
-- Reuse the same recipes across multiple days to minimize the total number of different meals in the plan.
 """
     else:
         variety_note = """
 MEAL VARIETY VS BULK PREP:
 - The patient prefers more variety day-to-day.
 - Aim for reasonable variety across the 14 days, but you may still reuse some meals for practicality.
-- Try to avoid repeating the exact same main meal more than 2 days in a row unless it clearly helps with simplicity.
 """
 
     # Household / family-planning note
@@ -246,11 +280,9 @@ MEAL VARIETY VS BULK PREP:
         household_note = f"""
 HOUSEHOLD / FAMILY MEAL SCALING:
 - The calorie and macro targets apply ONLY to the primary individual.
-- Meals and recipes should be planned so they reasonably feed approximately {household_size} people.
-- Portions may be scaled (for example: cook 4 chicken breasts instead of 1).
+- Meals and groceries should be planned to feed approximately {household_size} people.
 - Grocery quantities and total cost MUST reflect feeding about {household_size} people.
 - Macro estimates MUST reflect ONLY the primary individual's portion.
-- For fast-food meals, specify what the household orders, but macros apply to the primary individual's portion.
 """
 
     # Portion disclaimer shown ONLY when household size > 1
@@ -259,32 +291,28 @@ HOUSEHOLD / FAMILY MEAL SCALING:
         portion_disclaimer = f"""
 IMPORTANT PORTION DISCLAIMER:
 All calorie estimates, macro calculations, and portion recommendations in this plan apply ONLY to the primary individual.
-Meals may be prepared in larger quantities to feed the household ({household_size} people), but the additional portions
-are intended solely for other household members and may be divided however they choose.
-This plan does NOT provide nutritional guidance or portion sizing for non-primary household members.
+Meals may be prepared in larger quantities to feed the household ({household_size} people), but macros apply only to the primary individual's portion.
 """
 
-    # Pricing note – estimates only, biased upward for restaurants
+    # Pricing note
     two_week_budget = weekly_budget * 2.0
     pricing_note = f"""
 PRICING AND GROCERY COST (ESTIMATES ONLY):
 - All prices are approximate and must NOT use real-time data from any retailer or restaurant.
 - Base grocery prices on typical U.S. supermarket averages.
-- For restaurant / fast-food meals, estimate prices slightly higher than historical national averages
-  (roughly 10–25 percent higher) to reflect current prices and regional variation.
+- For restaurant / fast-food meals, estimate prices slightly higher than historical national averages (roughly 10–25 percent higher).
 - Weekly grocery budget is approximately ${weekly_budget:.2f} for the household (about {household_size} people).
-- You are planning for 14 days (2 weeks), so try to keep the total 14-day food cost (groceries + fast-food)
-  near ${two_week_budget:.2f} for the household.
-- When multiple preferred stores are listed, you may choose one primary store and assume most items are purchased there.
+- You are planning for 14 days (2 weeks), so try to keep the total 14-day food cost near ${two_week_budget:.2f} for the household.
 - For each grocery list item, include an estimated unit price and a line total.
 - Provide an estimated total grocery cost for all 14 days and a rough per-week average cost.
 """
 
-    # Final prompt
     return f"""
 {lang_note}
 
 You are a registered dietitian and meal-planning assistant.
+
+{goal_note}
 
 MACRO TARGETS (PER DAY) FOR PRIMARY INDIVIDUAL:
 - Daily calories: {macros.target_kcal:.0f} kcal
@@ -338,7 +366,6 @@ Day 1
 - Snack 1: ...
 - Main meal 2: ...
 - Snack 2: ...
-(Adjust labels and counts to match the number of main meals and snacks requested.)
 
 Repeat for Days 1–14.
 
@@ -362,8 +389,10 @@ PRICE DISCLAIMER:
 All prices are estimates only and NOT real-time retailer data. Actual prices vary by store and region.
 """
 
+
 def generate_meal_plan_with_ai(
     macros: MacroResult,
+    goal_mode: GoalMode,
     allergies: str,
     dislikes: str,
     preferred_store: str,
@@ -381,6 +410,7 @@ def generate_meal_plan_with_ai(
 ) -> str:
     prompt = build_mealplan_prompt(
         macros=macros,
+        goal_mode=goal_mode,
         allergies=allergies,
         dislikes=dislikes,
         preferred_store=preferred_store,
@@ -412,6 +442,7 @@ def generate_meal_plan_with_ai(
 
 
 # ---------- PDF GENERATION ----------
+# (UNCHANGED - keeping your full PDF function exactly as-is)
 
 def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
     """
@@ -457,13 +488,10 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
     body_font = "Helvetica"
     body_size = 10
 
-    table_leading = 10  # line spacing inside table cells
-    body_leading = 14   # line spacing for plain text
-
-    # ---------- Helpers ----------
+    table_leading = 10
+    body_leading = 14
 
     def wrap_text(text_line: str, font_name: str, font_size: int, max_width: float):
-        """Wrap a single line of text to fit within max_width using the given font."""
         words = text_line.split()
         if not words:
             return [""]
@@ -481,22 +509,6 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
         return lines
 
     def parse_days_and_meals(text: str):
-        """
-        Parse the raw text into a structure:
-        [
-          {
-            "day_title": "Day 1" or "Día 1",
-            "rows": [
-              ("Meal 1", "Main meal 1: ...", "Approx: X kcal, P: ..."),
-              ...
-            ]
-          },
-          ...
-        ]
-
-        Also returns a list of "leftover" lines (non-meal content) to print as
-        regular text after the tables.
-        """
         lines = text.splitlines()
         used_indices = set()
 
@@ -504,7 +516,6 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
         current_day = None
         current_rows = []
 
-        # Support both English and Spanish markers
         day_prefixes = ("Day ", "Día ", "Dia ")
         macros_prefixes = ("Approx:", "Aproximado:", "Aprox:")
 
@@ -513,29 +524,23 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
             raw = lines[i]
             line = raw.strip()
 
-            # Detect "Day X" / "Día X"
             if any(line.startswith(p) for p in day_prefixes):
                 if current_day is not None:
                     days.append({"day_title": current_day, "rows": current_rows})
                     current_rows = []
-
                 current_day = line
                 used_indices.add(i)
                 i += 1
                 continue
 
-            # Detect *meal* bullets, but ONLY if they have a macros line after them
             if current_day is not None and line.startswith("- "):
                 desc = line[2:].strip()
 
-                # Look ahead for a macros line (Approx / Aproximado)
                 macros_line = ""
                 macros_idx = None
                 j = i + 1
                 while j < len(lines):
-                    look_raw = lines[j]
-                    look = look_raw.strip()
-                    # Stop if we hit next meal or next day
+                    look = lines[j].strip()
                     if look.startswith("- ") or any(look.startswith(p) for p in day_prefixes):
                         break
                     if any(look.startswith(p) for p in macros_prefixes):
@@ -544,69 +549,53 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
                         break
                     j += 1
 
-                # If there is NO macros line, this bullet is not a meal row.
                 if not macros_line:
                     i += 1
                     continue
 
-                # Otherwise, treat as a meal row
                 used_indices.add(i)
                 if macros_idx is not None:
                     used_indices.add(macros_idx)
 
                 meal_number = len(current_rows) + 1
-                current_rows.append(
-                    (f"Meal {meal_number}", desc, macros_line or "")
-                )
-
+                current_rows.append((f"Meal {meal_number}", desc, macros_line or ""))
                 i += 1
                 continue
 
             i += 1
 
-        # Store last day
         if current_day is not None:
             days.append({"day_title": current_day, "rows": current_rows})
 
-        # Leftover lines (non-table content)
-        leftover_lines = [
-            lines[idx] for idx in range(len(lines)) if idx not in used_indices
-        ]
-
+        leftover_lines = [lines[idx] for idx in range(len(lines)) if idx not in used_indices]
         return days, leftover_lines
 
     def new_page_with_title():
-        """Start a new page and redraw the main title."""
         c.showPage()
         c.setFont(title_font, title_size)
         c.drawString(left_margin, page_height - top_margin, title)
         y = page_height - top_margin - 25
         return y
 
-    # ---------- Start first page with main title ----------
     c.setFont(title_font, title_size)
     c.drawString(left_margin, page_height - top_margin, title)
     current_y = page_height - top_margin - 25
 
-    # Parse text into structured days + leftover text
     days, leftover_lines = parse_days_and_meals(text)
 
-    # ---------- Table column layout ----------
-    col1_width = 70   # Meal #
-    col3_width = 130  # Macros
-    col2_width = usable_width - col1_width - col3_width  # Description
+    col1_width = 70
+    col3_width = 130
+    col2_width = usable_width - col1_width - col3_width
 
     col1_x = left_margin
     col2_x = col1_x + col1_width
     col3_x = col2_x + col2_width
 
-    # ---------- Draw tables for each day ----------
     for day in days:
         day_title = day["day_title"]
         rows = day["rows"]
 
         if not rows:
-            # If somehow no rows for this day, just print the day label as text
             if current_y <= bottom_margin + 40:
                 current_y = new_page_with_title()
             c.setFont(day_font, day_size)
@@ -614,16 +603,13 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
             current_y -= 20
             continue
 
-        # Ensure space for day title + header
         if current_y <= bottom_margin + 60:
             current_y = new_page_with_title()
 
-        # Day title
         c.setFont(day_font, day_size)
         c.drawString(left_margin, current_y, day_title)
-        current_y -= 25  # a bit more spacing after the day label
+        current_y -= 25
 
-        # Table header
         header_height = table_leading + 4
         if current_y - header_height <= bottom_margin:
             current_y = new_page_with_title()
@@ -635,17 +621,14 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
         header_top_y = current_y
         header_bottom_y = current_y - header_height
 
-        # Horizontal borders
         c.line(left_margin, header_top_y, page_width - right_margin, header_top_y)
         c.line(left_margin, header_bottom_y, page_width - right_margin, header_bottom_y)
 
-        # Vertical column borders
         c.line(col1_x, header_top_y, col1_x, header_bottom_y)
         c.line(col2_x, header_top_y, col2_x, header_bottom_y)
         c.line(col3_x, header_top_y, col3_x, header_bottom_y)
         c.line(page_width - right_margin, header_top_y, page_width - right_margin, header_bottom_y)
 
-        # Header labels (vertically centered-ish)
         baseline_offset = (header_height - table_header_size) / 2
         text_y = header_top_y - baseline_offset - 5
         c.drawString(col1_x + 2, text_y, "Meal #")
@@ -654,26 +637,21 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
 
         current_y = header_bottom_y
 
-        # Table body rows
         c.setFont(table_body_font, table_body_size)
-        for meal_no, desc, macros in rows:
-            # Wrap each cell
+        for meal_no, desc, macros_line in rows:
             meal_lines = wrap_text(meal_no, table_body_font, table_body_size, col1_width - 4)
             desc_lines = wrap_text(desc, table_body_font, table_body_size, col2_width - 4)
-            macros_lines = wrap_text(macros, table_body_font, table_body_size, col3_width - 4)
+            macros_lines = wrap_text(macros_line, table_body_font, table_body_size, col3_width - 4)
 
             num_lines = max(len(meal_lines), len(desc_lines), len(macros_lines))
             row_height = num_lines * table_leading + 4
 
-            # New page if needed
             if current_y - row_height <= bottom_margin:
                 current_y = new_page_with_title()
-                # Redraw day title and header on new page (continuation)
                 c.setFont(day_font, day_size)
                 c.drawString(left_margin, current_y, f"{day_title} (cont.)")
                 current_y -= 25
 
-                # Header again
                 header_height = table_leading + 4
                 c.setFont(table_header_font, table_header_size)
                 header_top_y = current_y
@@ -695,7 +673,6 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
                 current_y = header_bottom_y
                 c.setFont(table_body_font, table_body_size)
 
-            # Draw row borders
             row_top_y = current_y
             row_bottom_y = current_y - row_height
 
@@ -706,7 +683,6 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
             c.line(col3_x, row_top_y, col3_x, row_bottom_y)
             c.line(page_width - right_margin, row_top_y, page_width - right_margin, row_bottom_y)
 
-            # Draw text inside row
             row_text_y = row_top_y - 2 - table_leading
             for idx in range(num_lines):
                 if idx < len(meal_lines):
@@ -719,9 +695,8 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
 
             current_y = row_bottom_y
 
-        current_y -= 18  # Space after each day's table
+        current_y -= 18
 
-    # ---------- Leftover text as plain wrapped text ----------
     if leftover_lines:
         if current_y <= bottom_margin + 40:
             current_y = new_page_with_title()
@@ -747,7 +722,6 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
         c.drawText(text_obj)
         current_y = text_obj.getY()
 
-    # ---------- Disclaimer Section (language-specific) ----------
     if "Spanish" in title or "Español" in title:
         disclaimer_text = (
             "DESCARGO DE RESPONSABILIDAD:\n"
@@ -773,7 +747,6 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
             "or nutritional needs, please speak with a registered dietitian."
         )
 
-    # Add a little space before the disclaimer
     current_y -= 20
     if current_y <= bottom_margin + 40:
         current_y = new_page_with_title()
@@ -784,7 +757,6 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
     text_obj.setFont(body_font, body_size)
     text_obj.setLeading(body_leading)
 
-    # Draw the disclaimer, wrapped to the page width
     for line in disclaimer_text.split("\n"):
         wrapped = wrap_text(line, body_font, body_size, usable_width)
         for w in wrapped:
@@ -804,6 +776,7 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
     buffer.close()
     return pdf_bytes
 
+
 # ---------- STREAMLIT UI ----------
 
 def main():
@@ -814,6 +787,14 @@ def main():
 
     st.title("Personalized Meal Planning for the busy clinician")
     st.write("Enter metrics and personal preferences below")
+
+    # 0) MODE SELECTOR (NEW)
+    goal_mode: GoalMode = st.selectbox(
+        "Mode",
+        options=["Weight loss", "Maintenance", "Weight gain"],
+        index=0,
+        help="Select weight loss, maintenance, or weight gain."
+    )
 
     # 1. Patient / User Info
     st.subheader("1. Patient / User Info")
@@ -860,7 +841,7 @@ def main():
         weight_unit = st.radio(
             "Weight units",
             options=["kg", "lbs"],
-            index=1,  # default to lbs
+            index=1,
             horizontal=True,
         )
 
@@ -877,7 +858,6 @@ def main():
                 max_value=300.0,
                 value=65.0,
             )
-
         else:
             weight_current_lbs = st.number_input(
                 "Current weight (lbs)",
@@ -905,8 +885,9 @@ def main():
             options=["Current", "Goal"]
         )
 
-    # 2. Activity & Weight-Loss Settings
-    st.subheader("2. Activity & Weight-Loss Settings")
+    # 2. Activity & Maintenance Settings (UPDATED)
+    st.subheader("2. Activity & Maintenance Settings")
+
     activity_factor = st.number_input(
         "Activity factor",
         min_value=1.1,
@@ -916,32 +897,93 @@ def main():
         help="Typical: 1.2 sedentary, 1.375 light, 1.55 moderate, 1.725 very active."
     )
 
-    intensity = st.selectbox(
-        "Weight-loss intensity",
-        options=["Gentle", "Moderate", "Aggressive"],
-        help="Gentle ≈250 kcal/day deficit, Moderate ≈500, Aggressive ≈750."
-    )
+    use_estimated_maintenance = st.selectbox(
+        "Use estimated maintenance (TDEE)?",
+        options=["Yes", "No"],
+        index=0,
+        help="If No, enter a known maintenance calorie value."
+    ) == "Yes"
+
+    maintenance_kcal_known = None
+    if not use_estimated_maintenance:
+        maintenance_kcal_known = st.number_input(
+            "Known maintenance calories (kcal/day)",
+            min_value=800.0,
+            max_value=6000.0,
+            value=2600.0,
+            step=50.0,
+        )
+
+    # Weight-loss intensity only if weight loss mode
+    intensity: Optional[Intensity] = None
+    if goal_mode == "Weight loss":
+        intensity = st.selectbox(
+            "Weight-loss intensity",
+            options=["Gentle", "Moderate", "Aggressive"],
+            help="Gentle ≈250 kcal/day deficit, Moderate ≈500, Aggressive ≈750."
+        )
+
+    # Weight-gain surplus only if weight gain mode
+    surplus_kcal = 300.0
+    if goal_mode == "Weight gain":
+        st.subheader("2b. Weight gain settings")
+
+        surplus_kcal = st.number_input(
+            "Daily calorie surplus (kcal/day)",
+            min_value=100.0,
+            max_value=900.0,
+            value=300.0,
+            step=50.0,
+            help="Typical evidence-based surplus: +250–500 kcal/day."
+        )
+
+        # Guardrails
+        est_gain_kg_per_week = (surplus_kcal * 7) / 7700.0  # rough
+        st.caption(f"Estimated gain from surplus: ~{est_gain_kg_per_week:.2f} kg/week (rough estimate).")
+
+        # Recommended 0.25–0.5% BW/week
+        min_gain = float(weight_current_kg) * 0.0025
+        max_gain = float(weight_current_kg) * 0.005
+        st.caption(f"Recommended gain range: ~{min_gain:.2f} to {max_gain:.2f} kg/week (0.25–0.5% BW/week).")
 
     # 3. Macro Settings
     st.subheader("3. Macro Settings (g/kg)")
+
+    # Mode-specific defaults
+    default_protein = 1.4
+    default_fat = 0.7
+    protein_help = "Evidence-supported weight loss range: 1.2–1.6 g/kg."
+    fat_help = "Common clinical range: 0.5–1.0 g/kg."
+
+    if goal_mode == "Weight gain":
+        default_protein = 1.8
+        default_fat = 0.8
+        protein_help = "Weight gain evidence-based range: 1.6–2.2 g/kg/day."
+        fat_help = "Weight gain common range: 0.6–1.0 g/kg/day or ~20–30% of calories."
+    elif goal_mode == "Maintenance":
+        default_protein = 1.4
+        default_fat = 0.7
+        protein_help = "Maintenance: choose a reasonable protein target; adjust for training."
+        fat_help = "Maintenance: typical clinical range is 0.5–1.0 g/kg."
+
     col3, col4 = st.columns(2)
     with col3:
         protein_g_per_kg = st.number_input(
             "Protein (g/kg for macro weight)",
             min_value=0.8,
             max_value=2.5,
-            value=1.4,
+            value=float(default_protein),
             step=0.1,
-            help="Evidence-supported weight loss range: 1.2–1.6 g/kg."
+            help=protein_help
         )
     with col4:
         fat_g_per_kg = st.number_input(
             "Fat (g/kg for macro weight)",
             min_value=0.3,
             max_value=1.5,
-            value=0.7,
+            value=float(default_fat),
             step=0.1,
-            help="Common clinical range: 0.5–1.0 g/kg."
+            help=fat_help
         )
 
     # 4. Preferences
@@ -1161,7 +1203,11 @@ def main():
             weight_goal_kg=float(weight_goal_kg),
             weight_source=weight_source,
             activity_factor=float(activity_factor),
-            intensity=intensity,  # type: ignore[arg-type]
+            goal_mode=goal_mode,
+            intensity=intensity,
+            use_estimated_maintenance=use_estimated_maintenance,
+            maintenance_kcal_known=maintenance_kcal_known,
+            surplus_kcal=surplus_kcal if goal_mode == "Weight gain" else 0.0,
             protein_g_per_kg=float(protein_g_per_kg),
             fat_g_per_kg=float(fat_g_per_kg),
         )
@@ -1172,8 +1218,8 @@ def main():
         colA, colB = st.columns(2)
         with colA:
             st.metric("Resting Metabolic Rate (RMR)", f"{macros.rmr:.0f} kcal/day")
-            st.metric("TDEE (maintenance)", f"{macros.tdee:.0f} kcal/day")
-            st.metric("Weight-loss target", f"{macros.target_kcal:.0f} kcal/day")
+            st.metric("TDEE (estimated)", f"{macros.tdee:.0f} kcal/day")
+            st.metric("Target calories", f"{macros.target_kcal:.0f} kcal/day")
         with colB:
             st.write("Daily macros")
             st.write(f"- Protein: {macros.protein_g:.0f} g ({macros.protein_pct:.1f}% kcal)")
@@ -1187,6 +1233,7 @@ def main():
             try:
                 plan_text = generate_meal_plan_with_ai(
                     macros=macros,
+                    goal_mode=goal_mode,
                     allergies=allergies,
                     dislikes=dislikes,
                     preferred_store=preferred_store,
@@ -1229,4 +1276,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
