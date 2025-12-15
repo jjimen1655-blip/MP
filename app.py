@@ -481,35 +481,70 @@ Additional requirements:
 
 {portion_disclaimer}
 
-OUTPUT FORMAT (plain text, no markdown tables):
-IMPORTANT RESTRICTIONS (MANDATORY):
-You MUST NOT include optional commentary, explanations, tips, recipe suggestions, or offers for additional help.
-Do NOT include phrases such as "If you would like..." or similar.
-Only output the required meal plan, macros, costs, summaries, and grocery list exactly in the format shown.
+OUTPUT FORMAT (STRICT — MUST FOLLOW EXACTLY):
+1) Use plain text only. No markdown tables.
+2) DO NOT insert blank lines between items. (No empty lines inside a day.)
+3) Each day must follow this exact pattern:
 
 Day 1
-- Main meal 1: ...
-  Approx: X kcal, P: Y g, C: Z g, F: W g
-- Snack 1: ...
-- Main meal 2: ...
-- Snack 2: ...
+- <Meal/ Snack label>: <meal description>
+  Approx: <kcal> kcal, P: <g> g, C: <g> g, F: <g> g, Na: <mg> mg
+- <Meal/ Snack label>: <meal description>
+  Approx: <kcal> kcal, P: <g> g, C: <g> g, F: <g> g, Na: <mg> mg
+(repeat until the day has exactly {big_meals_per_day + snacks_per_day} total items)
 
-Repeat for Days 1-14.
+MANDATORY RULES FOR EVERY SINGLE ITEM:
+- EVERY bullet line that begins with "- " MUST be followed immediately by an "Approx:" line on the NEXT line.
+- This includes snacks, home-cooked meals, and ALL fast-food/takeout items.
+- The "Approx:" line MUST start with exactly "Approx:" (English) or "Aprox:" / "Aproximado:" (Spanish), and must be on its own line.
+- Always include sodium as "Na: <mg> mg" (use a rough estimate). This is especially important for fast-food and cardiac diets.
 
-At the end of the 14 days, include:
-1) A rough estimated daily calorie and macro summary per day for the primary individual.
-2) A rough estimated daily and total 14-day cost (grocery + fast-food if used), plus a rough per-week average.
-3) A combined grocery list grouped by category:
-   Before listing categories, include ONE concise line:
-   "This 14-day grocery list is scaled to feed approximately {household_size} people."
-   Then list categories:
-   - Produce
-   - Protein
-   - Dairy
-   - Grains / Starches
-   - Pantry
-   - Frozen
-   - Other
+FAST-FOOD NAMING RULE (when fast food is used):
+- For fast-food meals, include the restaurant name in the description, e.g.:
+  "- Lunch: Chick-fil-A Grilled Chicken Sandwich"
+  "  Approx: ..."
+
+NO EXTRA TEXT RULE:
+- Do NOT add any commentary, tips, explanations, or extra headers inside days.
+- Do NOT output a separate "Meal Plan (English)" header mid-document.
+- Only the Day blocks + the required end sections.
+
+AFTER Day 14, include ONLY these 3 sections (in this order):
+
+1) Daily macro summary (rough)
+- Day 1: <kcal> kcal, P: <g> g, C: <g> g, F: <g> g
+...
+- Day 14: ...
+
+2) Cost summary (rough estimates only)
+- Total 14-day cost: $X
+- Average per week: $Y
+
+3) Grocery list (grouped by category)
+This 14-day grocery list is scaled to feed approximately {household_size} people.
+
+Each category MUST contain at least one specific grocery item.
+Each item MUST include:
+- item name
+- approximate unit price (USD)
+- line total (USD)
+
+Do NOT use placeholders such as "...". Do NOT use placeholders such as "...".
+
+- Produce:
+  - item name — unit price — line total
+- Protein:
+  - item name — unit price — line total
+- Dairy:
+  - item name — unit price — line total
+- Grains / Starches:
+  - item name — unit price — line total
+- Pantry:
+  - item name — unit price — line total
+- Frozen:
+  - item name — unit price — line total
+- Other:
+  - item name — unit price — line total
    For each item, include approximate unit price and line total.
 
 PRICE DISCLAIMER:
@@ -1332,3 +1367,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
