@@ -1,6 +1,7 @@
 import os
+import re
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal, Optional, Set
 
 import streamlit as st
 from openai import OpenAI
@@ -60,6 +61,94 @@ def normalize_text_for_parsing(text: str) -> str:
         else:
             fixed_lines.append(line)
     return "\n".join(fixed_lines)
+
+
+def add_section_spacing(text: str) -> str:
+    """
+    Option A:
+    Adds blank lines between major sections WITHOUT inserting blank lines inside Day blocks.
+    Also removes stray "Meal Plan (English/Spanish)" headers if the model inserts them.
+    """
+    lines = text.splitlines()
+
+    major_headers: Set[str] = {
+        "Cost summary (estimates only)",
+        "Cost summary (rough estimates only)",
+        "Grocery list (scaled for ~1 person, 14 days)",
+        "Grocery list (grouped by category)",
+        "Cooking instructions for selected main meals",
+        "PRICE DISCLAIMER:",
+        "DISCLAIMER:",
+        # Spanish
+        "Resumen de costos (estimaciones aproximadas)",
+        "Lista del súper (agrupada por categoría)",
+        "Instrucciones de cocina para algunas comidas principales",
+        "AVISO DE PRECIOS:",
+        "DESCARGO DE RESPONSABILIDAD:",
+    }
+
+    grocery_headers: Set[str] = {
+        "Produce:",
+        "Protein:",
+        "Dairy:",
+        "Grains / Starches:",
+        "Pantry:",
+        "Frozen:",
+        "Other:",
+        # Spanish
+        "Productos frescos:",
+        "Proteínas:",
+        "Lácteos:",
+        "Granos / Almidones:",
+        "Despensa:",
+        "Congelados:",
+        "Otros:",
+    }
+
+    banned_single_line_headers: Set[str] = {
+        "Meal Plan (English)",
+        "Meal Plan (Spanish)",
+        "Meal Plan (Español)",
+        "Plan de comidas (Español)",
+        "Plan de comidas",
+    }
+
+    out = []
+    in_day_block = False
+    day_prefixes = ("Day ", "Día ", "Dia ")
+
+    for raw in lines:
+        line = raw.rstrip("\n")
+        stripped = line.strip()
+
+        # Drop stray headers that sometimes appear mid-output
+        if stripped in banned_single_line_headers:
+            continue
+
+        # Start of Day block
+        if any(stripped.startswith(p) for p in day_prefixes):
+            in_day_block = True
+            if out and out[-1].strip() != "":
+                out.append("")
+            out.append(line)
+            continue
+
+        # Leaving Day block when we hit end sections
+        if in_day_block and (stripped in major_headers or stripped in grocery_headers):
+            in_day_block = False
+
+        # Add spacing before major headers / grocery category headers (only outside day blocks)
+        if not in_day_block and (stripped in major_headers or stripped in grocery_headers):
+            if out and out[-1].strip() != "":
+                out.append("")
+            out.append(line)
+            continue
+
+        out.append(line)
+
+    spaced = "\n".join(out)
+    spaced = re.sub(r"\n{3,}", "\n\n", spaced).strip()
+    return spaced
 
 
 # ---------- OPENAI CLIENT SETUP ----------
@@ -719,6 +808,7 @@ def generate_meal_plan_with_ai(
     )
 
     raw_text = completion.choices[0].message.content or ""
+    # Keep unicode normalization here (Option A spacing applied later after generation)
     return normalize_text_for_parsing(raw_text)
 
 
@@ -1460,10 +1550,15 @@ def main():
                     prep_style=prep_style,
                     household_size=household_size,
                     meal_prep_style=meal_prep_style,
-                    avg_prep_minutes=int(avg_prep_minutes),   # NEW
-                    cooking_skill=str(cooking_skill),         # NEW
+                    avg_prep_minutes=int(avg_prep_minutes),
+                    cooking_skill=str(cooking_skill),
                 )
-                st.session_state["plan_text"] = normalize_text_for_parsing(plan_text)
+
+                # Option A applied here (safe: never adds blank lines inside Day blocks)
+                clean_text = normalize_text_for_parsing(plan_text)
+                clean_text = add_section_spacing(clean_text)
+
+                st.session_state["plan_text"] = clean_text
                 st.session_state["plan_language"] = language
             except Exception as e:
                 st.error(f"Error generating meal plan: {e}")
@@ -1475,8 +1570,9 @@ def main():
         st.subheader("Current meal plan")
         st.text_area("Meal plan", plan_text, height=500)
 
+        # Use the already-cleaned text for PDF
         pdf_bytes = create_pdf_from_text(
-            normalize_text_for_parsing(plan_text),
+            plan_text,
             title="Meal Plan (Spanish)" if plan_language == "Spanish" else "Meal Plan (English)",
         )
 
