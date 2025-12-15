@@ -56,7 +56,6 @@ def normalize_text_for_parsing(text: str) -> str:
     for line in text.splitlines():
         stripped = line.lstrip()
         if stripped.startswith(("-", "*")) and not stripped.startswith("- "):
-            # "* item" -> "- item", "-" already handled but enforce spacing
             stripped = stripped[1:].lstrip()
             fixed_lines.append("- " + stripped)
         else:
@@ -222,17 +221,117 @@ def build_mealplan_prompt(
     household_size: int,
     meal_prep_style: str,
 ):
+    # --- NEW: Spanish hard-guard + localized grocery headers + localized price disclaimer ---
     if language == "Spanish":
         lang_note = (
-            "IMPORTANT: Responde TODO en español, incluyendo encabezados, etiquetas y descripciones. "
-            "Usa un estilo claro y fácil de entender para pacientes. "
-            "Usa SOLO guiones ASCII '-' para viñetas y rangos numéricos (por ejemplo: 500-1000)."
+            "REQUISITO DE IDIOMA (OBLIGATORIO):\n"
+            "- TODO el texto debe estar en español.\n"
+            "- Esto incluye encabezados, secciones, categorías de la lista del súper y avisos.\n"
+            "- NO uses inglés, excepto nombres de marcas o medicamentos.\n"
+            "- Usa SOLO guiones ASCII '-' para viñetas y rangos numéricos (por ejemplo: 500-1000).\n"
         )
+
+        grocery_headers = """
+Productos frescos:
+- nombre del artículo — precio unitario — total de la línea
+
+Proteínas:
+- nombre del artículo — precio unitario — total de la línea
+
+Lácteos:
+- nombre del artículo — precio unitario — total de la línea
+
+Granos / Almidones:
+- nombre del artículo — precio unitario — total de la línea
+
+Despensa:
+- nombre del artículo — precio unitario — total de la línea
+
+Congelados:
+- nombre del artículo — precio unitario — total de la línea
+
+Otros:
+- nombre del artículo — precio unitario — total de la línea
+""".strip()
+
+        price_disclaimer = (
+            "AVISO DE PRECIOS:\n"
+            "Todos los precios son estimaciones únicamente y NO representan datos en tiempo real de tiendas. "
+            "Los precios reales varían según la tienda y la región."
+        )
+
+        # Keep your strict parsing rule but allow Spanish macro-prefixes (your parser already accepts Aprox/Aproximado)
+        approx_rule_note = (
+            '- La línea de macros debe iniciar exactamente con "Aprox:" o "Aproximado:" (en español) '
+            'y debe ir en su propia línea.\n'
+        )
+
+        end_sections_header = """
+DESPUÉS del Día 14, incluye SOLAMENTE estas 3 secciones (en este orden):
+
+1) 1) Un resumen conciso del objetivo diario de calorías y macronutrientes para la persona principal (una sola línea, NO por día).
+
+2) Resumen de costos (estimaciones aproximadas)
+- Costo total de 14 días: $X
+- Promedio por semana: $Y
+
+3) Lista del súper (agrupada por categoría)
+
+Esta lista del súper de 14 días está ajustada para alimentar aproximadamente a {household_size} persona(s).
+""".strip()
+
     else:
         lang_note = (
             "IMPORTANT: Respond entirely in English. Use a clear, patient-friendly style. "
             "Use ONLY standard ASCII hyphens '-' for bullets and numeric ranges (e.g., 500-1000)."
         )
+
+        grocery_headers = """
+Produce:
+- item name — unit price — line total
+
+Protein:
+- item name — unit price — line total
+
+Dairy:
+- item name — unit price — line total
+
+Grains / Starches:
+- item name — unit price — line total
+
+Pantry:
+- item name — unit price — line total
+
+Frozen:
+- item name — unit price — line total
+
+Other:
+- item name — unit price — line total
+""".strip()
+
+        price_disclaimer = (
+            "PRICE DISCLAIMER:\n"
+            "All prices are estimates only and NOT real-time retailer data. "
+            "Actual prices vary by store and region."
+        )
+
+        approx_rule_note = (
+            '- The "Approx:" line MUST start with exactly "Approx:" and must be on its own line.\n'
+        )
+
+        end_sections_header = """
+AFTER Day 14, include ONLY these 3 sections (in this order):
+
+1) 1) One concise daily macro target summary for the primary individual (single line, not per day).
+
+2) Cost summary (rough estimates only)
+- Total 14-day cost: $X
+- Average per week: $Y
+
+3) Grocery list (grouped by category)
+
+This 14-day grocery list is scaled to feed approximately {household_size} people.
+""".strip()
 
     if goal_mode == "Maintenance":
         goal_note = """
@@ -468,7 +567,7 @@ Plan meals and grocery quantities so they can reasonably feed the whole househol
 but keep all calorie and macro estimates focused on the primary individual's portion only.
 
 STRUCTURE:
-- For each day, include exactly {big_meals_per_day} main meal(s) and {snacks_per_day} snack time(s).
+- For each day, include exactly {big_meals_per_day} main meal(s) and {snacks_per_day} snack time(s) per day.
 - Label them clearly (for example: Breakfast, Lunch, Dinner, Snack 1, Snack 2).
 - Distribute calories and macros so that totals for the day roughly match the macro targets for the primary individual.
 
@@ -496,8 +595,7 @@ Day 1
 MANDATORY RULES FOR EVERY SINGLE ITEM:
 - EVERY bullet line that begins with "- " MUST be followed immediately by an "Approx:" line on the NEXT line.
 - This includes snacks, home-cooked meals, and ALL fast-food/takeout items.
-- The "Approx:" line MUST start with exactly "Approx:" (English) or "Aprox:" / "Aproximado:" (Spanish), and must be on its own line.
-- Always include sodium as "Na: <mg> mg" (use a rough estimate). This is especially important for fast-food and cardiac diets.
+{approx_rule_note}- Always include sodium as "Na: <mg> mg" (use a rough estimate). This is especially important for fast-food and cardiac diets.
 
 FAST-FOOD NAMING RULE (when fast food is used):
 - For fast-food meals, include the restaurant name in the description, e.g.:
@@ -509,17 +607,7 @@ NO EXTRA TEXT RULE:
 - Do NOT output a separate "Meal Plan (English)" header mid-document.
 - Only the Day blocks + the required end sections.
 
-AFTER Day 14, include ONLY these 3 sections (in this order):
-
-1) 1) One concise daily macro target summary for the primary individual (single line, not per day).
-
-2) Cost summary (rough estimates only)
-- Total 14-day cost: $X
-- Average per week: $Y
-
-3) Grocery list (grouped by category)
-
-This 14-day grocery list is scaled to feed approximately {household_size} people.
+{end_sections_header}
 
 FORMAT RULES (MANDATORY):
 - Category names MUST be plain text headers with NO leading dash.
@@ -528,42 +616,12 @@ FORMAT RULES (MANDATORY):
 - Do NOT use placeholders such as "...".
 - Each category MUST contain at least one specific grocery item.
 
-Correct format example:
-
-Produce:
-- Bananas (14) — $0.25 each — $3.50
-- Apples (10) — $0.80 each — $8.00
-
-Protein:
-- Chicken breast (8 lb) — $3.50 per lb — $28.00
-
 Now output the grocery list using EXACTLY this structure:
 
-Produce:
-- item name — unit price — line total
+{grocery_headers}
 
-Protein:
-- item name — unit price — line total
-
-Dairy:
-- item name — unit price — line total
-
-Grains / Starches:
-- item name — unit price — line total
-
-Pantry:
-- item name — unit price — line total
-
-Frozen:
-- item name — unit price — line total
-
-Other:
-- item name — unit price — line total
-
-
-PRICE DISCLAIMER:
-All prices are estimates only and NOT real-time retailer data. Actual prices vary by store and region.
-"""
+{price_disclaimer}
+""".strip()
 
 
 def generate_meal_plan_with_ai(
@@ -1148,7 +1206,6 @@ def main():
             help=protein_help,
             key="protein_g_per_kg_input",
         )
-        # keep session state in sync
         st.session_state["protein_g_per_kg"] = float(protein_g_per_kg)
 
     with col4:
@@ -1352,7 +1409,6 @@ def main():
                     household_size=household_size,
                     meal_prep_style=meal_prep_style,
                 )
-                # extra safety: normalize before storing
                 st.session_state["plan_text"] = normalize_text_for_parsing(plan_text)
                 st.session_state["plan_language"] = language
             except Exception as e:
@@ -1365,7 +1421,6 @@ def main():
         st.subheader("Current meal plan")
         st.text_area("Meal plan", plan_text, height=500)
 
-        # normalize again before PDF (defensive)
         pdf_bytes = create_pdf_from_text(
             normalize_text_for_parsing(plan_text),
             title="Meal Plan (Spanish)" if plan_language == "Spanish" else "Meal Plan (English)",
@@ -1381,5 +1436,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
