@@ -511,41 +511,55 @@ NO EXTRA TEXT RULE:
 
 AFTER Day 14, include ONLY these 3 sections (in this order):
 
-1) Daily macro summary (rough)
-- Day 1: <kcal> kcal, P: <g> g, C: <g> g, F: <g> g
-...
-- Day 14: ...
+1) 1) One concise daily macro target summary for the primary individual (single line, not per day).
 
 2) Cost summary (rough estimates only)
 - Total 14-day cost: $X
 - Average per week: $Y
 
 3) Grocery list (grouped by category)
+
 This 14-day grocery list is scaled to feed approximately {household_size} people.
 
-Each category MUST contain at least one specific grocery item.
-Each item MUST include:
-- item name
-- approximate unit price (USD)
-- line total (USD)
+FORMAT RULES (MANDATORY):
+- Category names MUST be plain text headers with NO leading dash.
+- Grocery items MUST be bulleted with a leading "- ".
+- Do NOT put a dash in front of category names.
+- Do NOT use placeholders such as "...".
+- Each category MUST contain at least one specific grocery item.
 
-Do NOT use placeholders such as "...". Do NOT use placeholders such as "...".
+Correct format example:
 
-- Produce:
-  - item name — unit price — line total
-- Protein:
-  - item name — unit price — line total
-- Dairy:
-  - item name — unit price — line total
-- Grains / Starches:
-  - item name — unit price — line total
-- Pantry:
-  - item name — unit price — line total
-- Frozen:
-  - item name — unit price — line total
-- Other:
-  - item name — unit price — line total
-   For each item, include approximate unit price and line total.
+Produce:
+- Bananas (14) — $0.25 each — $3.50
+- Apples (10) — $0.80 each — $8.00
+
+Protein:
+- Chicken breast (8 lb) — $3.50 per lb — $28.00
+
+Now output the grocery list using EXACTLY this structure:
+
+Produce:
+- item name — unit price — line total
+
+Protein:
+- item name — unit price — line total
+
+Dairy:
+- item name — unit price — line total
+
+Grains / Starches:
+- item name — unit price — line total
+
+Pantry:
+- item name — unit price — line total
+
+Frozen:
+- item name — unit price — line total
+
+Other:
+- item name — unit price — line total
+
 
 PRICE DISCLAIMER:
 All prices are estimates only and NOT real-time retailer data. Actual prices vary by store and region.
@@ -1367,4 +1381,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
