@@ -51,7 +51,6 @@ def normalize_text_for_parsing(text: str) -> str:
         text = text.replace(bad, good)
 
     # Normalize line starts that look like bullets but aren't "- "
-    # e.g. "• thing" -> "- thing"
     fixed_lines = []
     for line in text.splitlines():
         stripped = line.lstrip()
@@ -220,6 +219,8 @@ def build_mealplan_prompt(
     prep_style: str,
     household_size: int,
     meal_prep_style: str,
+    avg_prep_minutes: int,     # NEW
+    cooking_skill: str,        # NEW
 ):
     # --- NEW: Spanish hard-guard + localized grocery headers + localized price disclaimer ---
     if language == "Spanish":
@@ -260,22 +261,31 @@ Otros:
             "Los precios reales varían según la tienda y la región."
         )
 
-        # Keep your strict parsing rule but allow Spanish macro-prefixes (your parser already accepts Aprox/Aproximado)
         approx_rule_note = (
             '- La línea de macros debe iniciar exactamente con "Aprox:" o "Aproximado:" (en español) '
             'y debe ir en su propia línea.\n'
         )
 
-        end_sections_header = """
-DESPUÉS del Día 14, incluye SOLAMENTE estas 3 secciones (en este orden):
+        end_sections_header = f"""
+DESPUÉS del Día 14, incluye SOLAMENTE estas 4 secciones (en este orden):
 
-1) 1) Un resumen conciso del objetivo diario de calorías y macronutrientes para la persona principal (una sola línea, NO por día).
+1) Un resumen conciso del objetivo diario de calorías y macronutrientes para la persona principal (una sola línea, NO por día).
 
 2) Resumen de costos (estimaciones aproximadas)
 - Costo total de 14 días: $X
 - Promedio por semana: $Y
 
 3) Lista del súper (agrupada por categoría)
+
+4) Instrucciones de cocina para algunas comidas principales
+- Incluye instrucciones SOLO para las comidas principales más complejas que usaste (NO para cada comida).
+- Apunta a 6-10 recetas en total, dependiendo de cuántas comidas complejas aparezcan.
+- Para cada receta:
+  Receta: <nombre tal como aparece en el plan>
+  - Tiempo: ~X minutos (intenta respetar la guía de tiempo del usuario)
+  - Porciones: suficiente para apoyar a la familia; aclara cómo porcionar para la persona principal
+  - Ingredientes: lista corta
+  - Pasos: 4-8 pasos cortos (muy fáciles si el nivel es principiante)
 
 Esta lista del súper de 14 días está ajustada para alimentar aproximadamente a {household_size} persona(s).
 """.strip()
@@ -319,16 +329,26 @@ Other:
             '- The "Approx:" line MUST start with exactly "Approx:" and must be on its own line.\n'
         )
 
-        end_sections_header = """
-AFTER Day 14, include ONLY these 3 sections (in this order):
+        end_sections_header = f"""
+AFTER Day 14, include ONLY these 4 sections (in this order):
 
-1) 1) One concise daily macro target summary for the primary individual (single line, not per day).
+1) One concise daily macro target summary for the primary individual (single line, not per day).
 
 2) Cost summary (rough estimates only)
 - Total 14-day cost: $X
 - Average per week: $Y
 
 3) Grocery list (grouped by category)
+
+4) Cooking instructions for selected main meals
+- Include instructions ONLY for the more complex main meals you used (NOT for every meal).
+- Aim for 6-10 recipes total, depending on how many complex meals appear.
+- For each recipe:
+  Recipe: <name as used in the plan>
+  - Time: ~X minutes (try to respect the user's time guide)
+  - Servings: enough to help feed the household; note how to portion for the primary individual
+  - Ingredients: short list
+  - Steps: 4-8 short steps (beginner-friendly if selected)
 
 This 14-day grocery list is scaled to feed approximately {household_size} people.
 """.strip()
@@ -505,6 +525,21 @@ MEAL VARIETY VS BULK PREP:
 - Aim for reasonable variety across the 14 days, but you may still reuse some meals for practicality.
 """
 
+    # NEW: Time + skill guidance
+    time_note = f"""
+TIME AVAILABLE TO COOK (GUIDE, NOT STRICT):
+- Average time available per MAIN meal: {int(avg_prep_minutes)} minutes.
+- If time is 0-10 minutes, prioritize no-cook, microwave, air-fryer, rotisserie chicken, bagged salad kits, frozen steamable veggies, pre-cooked grains.
+- Prefer recipes that reuse ingredients and avoid long simmer/bake times unless they can be batch-prepped quickly.
+"""
+
+    skill_note = f"""
+COOKING SKILL LEVEL:
+- Skill level: {cooking_skill}
+- If Beginner: keep cooking methods very simple and include a short instruction section at the end ONLY for the more complex main meals you used.
+- If Intermediate/Advanced: instructions section can be shorter or omitted unless a meal is unusually complex.
+"""
+
     household_note = ""
     portion_disclaimer = ""
     if household_size and household_size > 1:
@@ -557,6 +592,8 @@ PATIENT CONSTRAINTS:
 {fast_food_note}
 {meal_timing_note}
 {prep_note}
+{time_note}
+{skill_note}
 {variety_note}
 {household_note}
 {pricing_note}
@@ -642,6 +679,8 @@ def generate_meal_plan_with_ai(
     prep_style: str,
     household_size: int,
     meal_prep_style: str,
+    avg_prep_minutes: int,     # NEW
+    cooking_skill: str,        # NEW
 ) -> str:
     prompt = build_mealplan_prompt(
         macros=macros,
@@ -661,6 +700,8 @@ def generate_meal_plan_with_ai(
         prep_style=prep_style,
         household_size=household_size,
         meal_prep_style=meal_prep_style,
+        avg_prep_minutes=int(avg_prep_minutes),
+        cooking_skill=str(cooking_skill),
     )
 
     completion = client.chat.completions.create(
@@ -1146,8 +1187,6 @@ def main():
         help=glp1_help
     )
 
-    # If GLP-1 is checked, force protein floor behavior immediately (visible)
-    # and set a sensible starting value if currently below 1.6.
     if using_glp1:
         if st.session_state["protein_g_per_kg"] < 1.6:
             st.session_state["protein_g_per_kg"] = 1.6
@@ -1155,7 +1194,6 @@ def main():
     # 3) Macro Settings (moved BELOW diet + GLP-1)
     st.subheader("3. Macro Settings (g/kg)")
 
-    # Protein bounds depend on GLP-1 selection
     if using_glp1:
         protein_min = 1.6
         protein_max = 2.0
@@ -1170,7 +1208,6 @@ def main():
         else:
             protein_help = "Evidence-supported weight loss range: 1.2–1.6 g/kg."
 
-    # Fat defaults (keep your prior defaults)
     if goal_mode == "Weight gain":
         default_fat = 0.8
         fat_help = "Weight gain common range: 0.6–1.0 g/kg/day or ~20–30% of calories."
@@ -1181,7 +1218,6 @@ def main():
         default_fat = 0.7
         fat_help = "Common clinical range: 0.5–1.0 g/kg."
 
-    # If GLP-1 is OFF and protein session value is still the old default, set mode-specific default cleanly
     if not using_glp1:
         if goal_mode == "Weight gain" and abs(st.session_state["protein_g_per_kg"] - 1.4) < 1e-6:
             st.session_state["protein_g_per_kg"] = 1.8
@@ -1190,7 +1226,6 @@ def main():
         elif goal_mode == "Weight loss" and abs(st.session_state["protein_g_per_kg"] - 1.4) < 1e-6:
             st.session_state["protein_g_per_kg"] = 1.4
 
-    # Also ensure fat session state has a sensible value once per run
     if "fat_initialized" not in st.session_state:
         st.session_state["fat_g_per_kg"] = float(default_fat)
         st.session_state["fat_initialized"] = True
@@ -1220,7 +1255,6 @@ def main():
         )
         st.session_state["fat_g_per_kg"] = float(fat_g_per_kg)
 
-    # Weight gain carb target (training volume)
     carbs_g_per_kg_gain: Optional[float] = None
     if goal_mode == "Weight gain":
         st.subheader("3b. Weight gain carb target (training volume)")
@@ -1334,6 +1368,24 @@ def main():
         ],
     )
 
+    # 8b) Time available to meal prep + skill level (NEW)
+    st.subheader("8b. Time available to meal prep (optional)")
+    avg_prep_minutes = st.number_input(
+        "Average time you can spend cooking/prepping per main meal (minutes)",
+        min_value=0,
+        max_value=120,
+        value=20,
+        step=10,
+        help="Use 0 for 'no-cook / microwave only'. This is a guide, not a strict limit."
+    )
+
+    cooking_skill = st.selectbox(
+        "Cooking skill level",
+        options=["Beginner (needs instructions)", "Intermediate", "Advanced"],
+        index=0,
+        help="Beginner will trigger simple instructions for only the more complex meals at the end."
+    )
+
     # 9) Household / family planning
     st.subheader("9. Household / family planning")
     household_size = st.number_input(
@@ -1408,6 +1460,8 @@ def main():
                     prep_style=prep_style,
                     household_size=household_size,
                     meal_prep_style=meal_prep_style,
+                    avg_prep_minutes=int(avg_prep_minutes),   # NEW
+                    cooking_skill=str(cooking_skill),         # NEW
                 )
                 st.session_state["plan_text"] = normalize_text_for_parsing(plan_text)
                 st.session_state["plan_language"] = language
