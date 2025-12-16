@@ -151,6 +151,73 @@ def add_section_spacing(text: str) -> str:
     return spaced
 
 
+def add_recipe_spacing_and_dividers(text: str, divider_len: int = 48) -> str:
+    """
+    Adds spacing BETWEEN recipes and inserts a horizontal divider BETWEEN recipes
+    in the "Cooking instructions..." section only.
+
+    - Does NOT insert blank lines inside Day blocks.
+    - Divider is ASCII hyphens only, safe for PDF parsing.
+    """
+    lines = text.splitlines()
+
+    recipe_section_headers = {
+        "Cooking instructions for selected main meals",
+        "Instrucciones de cocina para algunas comidas principales",
+    }
+
+    # We treat everything after the header as within the recipe section
+    # until the end of text (the disclaimer is appended later by PDF function,
+    # but the model output already includes its own price disclaimer, etc.).
+    in_recipe_section = False
+    saw_first_recipe = False
+    out = []
+
+    divider = "-" * max(10, int(divider_len))
+
+    for raw in lines:
+        line = raw.rstrip("\n")
+        stripped = line.strip()
+
+        # Toggle on when we hit the cooking instructions header
+        if stripped in recipe_section_headers:
+            in_recipe_section = True
+            saw_first_recipe = False
+            out.append(line)
+            continue
+
+        if not in_recipe_section:
+            out.append(line)
+            continue
+
+        # Inside recipe section:
+        # Detect a new recipe header line
+        is_recipe_header = stripped.startswith("Recipe:") or stripped.startswith("Receta:")
+
+        if is_recipe_header:
+            if saw_first_recipe:
+                # Ensure blank line before divider
+                if out and out[-1].strip() != "":
+                    out.append("")
+                out.append(divider)
+                out.append("")
+            else:
+                # Add a blank line after the section header before the first recipe
+                if out and out[-1].strip() != "":
+                    out.append("")
+                saw_first_recipe = True
+
+            out.append(line)
+            continue
+
+        out.append(line)
+
+    result = "\n".join(out)
+    # Keep it tidy: allow up to 2 consecutive blank lines
+    result = re.sub(r"\n{3,}", "\n\n", result).strip()
+    return result
+
+
 # ---------- OPENAI CLIENT SETUP ----------
 api_key = None
 try:
@@ -1557,6 +1624,9 @@ def main():
                 # Option A applied here (safe: never adds blank lines inside Day blocks)
                 clean_text = normalize_text_for_parsing(plan_text)
                 clean_text = add_section_spacing(clean_text)
+
+                # NEW: add spacing + horizontal divider between recipes (only in the recipe section)
+                clean_text = add_recipe_spacing_and_dividers(clean_text, divider_len=48)
 
                 st.session_state["plan_text"] = clean_text
                 st.session_state["plan_language"] = language
