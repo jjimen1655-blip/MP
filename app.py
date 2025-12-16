@@ -166,9 +166,6 @@ def add_recipe_spacing_and_dividers(text: str, divider_len: int = 48) -> str:
         "Instrucciones de cocina para algunas comidas principales",
     }
 
-    # We treat everything after the header as within the recipe section
-    # until the end of text (the disclaimer is appended later by PDF function,
-    # but the model output already includes its own price disclaimer, etc.).
     in_recipe_section = False
     saw_first_recipe = False
     out = []
@@ -190,19 +187,16 @@ def add_recipe_spacing_and_dividers(text: str, divider_len: int = 48) -> str:
             out.append(line)
             continue
 
-        # Inside recipe section:
-        # Detect a new recipe header line
+        # Inside recipe section: detect a new recipe header line
         is_recipe_header = stripped.startswith("Recipe:") or stripped.startswith("Receta:")
 
         if is_recipe_header:
             if saw_first_recipe:
-                # Ensure blank line before divider
                 if out and out[-1].strip() != "":
                     out.append("")
                 out.append(divider)
                 out.append("")
             else:
-                # Add a blank line after the section header before the first recipe
                 if out and out[-1].strip() != "":
                     out.append("")
                 saw_first_recipe = True
@@ -213,9 +207,82 @@ def add_recipe_spacing_and_dividers(text: str, divider_len: int = 48) -> str:
         out.append(line)
 
     result = "\n".join(out)
-    # Keep it tidy: allow up to 2 consecutive blank lines
     result = re.sub(r"\n{3,}", "\n\n", result).strip()
     return result
+
+
+def format_end_sections(text: str) -> str:
+    """
+    Cleans up the post-Day-14 summary area so each section is on its own line with nice spacing:
+    - Splits macro target line from daily supplements
+    - Formats supplements as one-per-line bullets
+    - Ensures cost summary header is on its own line, with spacing
+    """
+    lines = text.splitlines()
+    out = []
+    in_supplements = False
+
+    for raw in lines:
+        line = raw.rstrip("\n")
+        s = line.strip()
+
+        # English: split the combined macro+supplements line
+        if s.startswith("Daily macro target (primary individual):"):
+            # Example:
+            # Daily macro target ...; Daily supplements (take once daily unless noted): Protein..., Multivitamin..., ...
+            if "; Daily supplements" in s:
+                left, right = s.split("; Daily supplements", 1)
+                out.append(left.strip())
+                out.append("")
+
+                supplements_header_full = "Daily supplements" + right
+                header_only = supplements_header_full.split(":", 1)[0].strip()
+                out.append(header_only + ":")
+
+                items_part = ""
+                if ":" in supplements_header_full:
+                    items_part = supplements_header_full.split(":", 1)[1].strip()
+
+                if items_part:
+                    items = [x.strip() for x in items_part.split(",") if x.strip()]
+                    for it in items:
+                        out.append(f"- {it}")
+
+                in_supplements = True
+                continue
+
+            out.append(line)
+            in_supplements = False
+            continue
+
+        # If we were in supplements and we hit a major header, stop supplements mode
+        if in_supplements and s in (
+            "Cost summary (rough estimates only)",
+            "Cost summary (estimates only)",
+            "Grocery list (grouped by category)",
+            "Cooking instructions for selected main meals",
+            "PRICE DISCLAIMER:",
+            "DISCLAIMER:",
+            "Resumen de costos (estimaciones aproximadas)",
+            "Lista del súper (agrupada por categoría)",
+            "Instrucciones de cocina para algunas comidas principales",
+            "AVISO DE PRECIOS:",
+            "DESCARGO DE RESPONSABILIDAD:",
+        ):
+            in_supplements = False
+
+        # Ensure Cost summary header is on its own line with spacing above
+        if s in ("Cost summary (rough estimates only)", "Cost summary (estimates only)"):
+            if out and out[-1].strip() != "":
+                out.append("")
+            out.append(s)
+            continue
+
+        out.append(line)
+
+    cleaned = "\n".join(out)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
 
 
 # ---------- OPENAI CLIENT SETUP ----------
@@ -681,7 +748,6 @@ MEAL VARIETY VS BULK PREP:
 - Aim for reasonable variety across the 14 days, but you may still reuse some meals for practicality.
 """
 
-    # NEW: Time + skill guidance
     time_note = f"""
 TIME AVAILABLE TO COOK (GUIDE, NOT STRICT):
 - Average time available per MAIN meal: {int(avg_prep_minutes)} minutes.
@@ -875,7 +941,6 @@ def generate_meal_plan_with_ai(
     )
 
     raw_text = completion.choices[0].message.content or ""
-    # Keep unicode normalization here (Option A spacing applied later after generation)
     return normalize_text_for_parsing(raw_text)
 
 
@@ -1625,8 +1690,11 @@ def main():
                 clean_text = normalize_text_for_parsing(plan_text)
                 clean_text = add_section_spacing(clean_text)
 
-                # NEW: add spacing + horizontal divider between recipes (only in the recipe section)
+                # Add spacing + horizontal divider between recipes (only in the recipe section)
                 clean_text = add_recipe_spacing_and_dividers(clean_text, divider_len=48)
+
+                # NEW: clean up end sections (macro target + supplements formatting)
+                clean_text = format_end_sections(clean_text)
 
                 st.session_state["plan_text"] = clean_text
                 st.session_state["plan_language"] = language
