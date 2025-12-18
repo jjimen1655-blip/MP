@@ -10,6 +10,52 @@ from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
 
 MODEL_NAME = "gpt-5-mini"
+# ---------- REFERENCE INFO ----------
+def activity_factor_reference_table():
+    st.markdown("### Activity Factor Reference")
+
+    st.table([
+        {
+            "Modifier": "1.20",
+            "Label": "Sedentary",
+            "What this actually means":
+                "Desk job + <5,000 steps/day; no structured exercise or ≤1x/week",
+            "Typical patient examples":
+                "Office workers, residents, drivers, remote workers",
+        },
+        {
+            "Modifier": "1.30",
+            "Label": "Lightly active",
+            "What this actually means":
+                "5,000-7,500 steps/day OR exercise 1-3x/week (≤30 min)",
+            "Typical patient examples":
+                "Dog walking, casual gym, yoga, light cycling",
+        },
+        {
+            "Modifier": "1.40",
+            "Label": "Moderately active",
+            "What this actually means":
+                "7,500-10,000 steps/day AND exercise 3-4x/week",
+            "Typical patient examples":
+                "Gym ~45 min, jogging, rec sports",
+        },
+        {
+            "Modifier": "1.50",
+            "Label": "Very active",
+            "What this actually means":
+                "10,000-12,500 steps/day AND hard exercise 5-6x/week",
+            "Typical patient examples":
+                "CrossFit, heavy lifting, distance running",
+        },
+        {
+            "Modifier": "1.60-1.70",
+            "Label": "Athlete / Labor",
+            "What this actually means":
+                "Manual labor OR 2-a-day training most days",
+            "Typical patient examples":
+                "Construction workers, competitive athletes",
+        },
+    ])
 
 # ---------- TEXT NORMALIZATION ----------
 def normalize_text_for_parsing(text: str) -> str:
@@ -1321,15 +1367,24 @@ def main():
 
     # 2) Activity & Maintenance Settings
     st.subheader("2. Activity & Maintenance Settings")
-    activity_factor = st.number_input(
-        "Activity factor",
-        min_value=1.1,
-        max_value=2.5,
-        value=1.375,
-        step=0.025,
-        help="Typical: 1.2 sedentary, 1.375 light, 1.55 moderate, 1.725 very active."
-    )
 
+    colA, colB = st.columns([10, 1])
+
+    with colA:
+        activity_factor = st.number_input(
+            "Activity factor",
+            min_value=1.1,
+            max_value=2.5,
+            value=1.4,
+            step=0.025,
+            help="Click the question mark for a detailed activity reference table."
+        )
+
+    with colB:
+        with st.popover("❓"):
+            activity_factor_reference_table()
+
+    # Outside the columns
     use_estimated_maintenance = st.selectbox(
         "Use estimated maintenance (TDEE)?",
         options=["Yes", "No"],
@@ -1724,3 +1779,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
