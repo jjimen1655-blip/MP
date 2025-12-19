@@ -352,60 +352,121 @@ def add_recipe_spacing_and_dividers(text: str, divider_len: int = 48) -> str:
 
 def format_end_sections(text: str) -> str:
     """
-    Cleans up the post-Day-14 summary area so each section is on its own line with nice spacing:
-    - Splits macro target line from daily supplements
-    - Formats supplements as one-per-line bullets
-    - Ensures cost summary header is on its own line, with spacing
+    Cleans up the post-Day-14 summary area so:
+    - Daily targets summary is on its own line
+    - Daily supplements becomes its own section, one-per-line bullets, with instructions preserved
+    - Cost summary header is on its own line with spacing
+    Works for both English and Spanish variants.
     """
     lines = text.splitlines()
     out = []
     in_supplements = False
+    supplements_header = None  # "Daily supplements:" or "Suplementos diarios:" (preserve language)
+
+    # Headers that end the supplements block
+    section_starters = {
+        "Cost summary (rough estimates only)",
+        "Cost summary (estimates only)",
+        "Grocery list (grouped by category)",
+        "Cooking instructions for selected main meals",
+        "PRICE DISCLAIMER:",
+        "DISCLAIMER:",
+        # Spanish
+        "Resumen de costos (estimaciones aproximadas)",
+        "Lista del súper (agrupada por categoría)",
+        "Instrucciones de cocina para algunas comidas principales",
+        "AVISO DE PRECIOS:",
+        "DESCARGO DE RESPONSABILIDAD:",
+    }
+
+    def _emit_supplements_block(supp_str: str, header: str):
+        out.append("")  # blank line before supplements section
+        out.append(header)
+
+        items = [x.strip() for x in supp_str.split(",") if x.strip()]
+        for it in items:
+            if it.startswith("- "):
+                out.append(it)
+            else:
+                out.append(f"- {it}")
 
     for raw in lines:
         line = raw.rstrip("\n")
         s = line.strip()
 
+        # Stop supplements mode if a new major section starts
+        if in_supplements and s in section_starters:
+            in_supplements = False
+            supplements_header = None
+
+        # --- Case A: legacy combined line ---
+        # "Daily macro target (primary individual): ...; Daily supplements: ..."
         if s.startswith("Daily macro target (primary individual):"):
             if "; Daily supplements" in s:
                 left, right = s.split("; Daily supplements", 1)
                 out.append(left.strip())
-                out.append("")
 
-                supplements_header_full = "Daily supplements" + right
-                header_only = supplements_header_full.split(":", 1)[0].strip()
-                out.append(header_only + ":")
+                # Parse items after "Daily supplements"
+                supp_str = right
+                if ":" in supp_str:
+                    supp_str = supp_str.split(":", 1)[1].strip()
+                else:
+                    supp_str = supp_str.strip()
 
-                items_part = ""
-                if ":" in supplements_header_full:
-                    items_part = supplements_header_full.split(":", 1)[1].strip()
-
-                if items_part:
-                    items = [x.strip() for x in items_part.split(",") if x.strip()]
-                    for it in items:
-                        out.append(f"- {it}")
-
+                supplements_header = "Daily supplements:"
+                _emit_supplements_block(supp_str, supplements_header)
                 in_supplements = True
                 continue
 
             out.append(line)
             in_supplements = False
+            supplements_header = None
             continue
 
-        if in_supplements and s in (
-            "Cost summary (rough estimates only)",
-            "Cost summary (estimates only)",
-            "Grocery list (grouped by category)",
-            "Cooking instructions for selected main meals",
-            "PRICE DISCLAIMER:",
-            "DISCLAIMER:",
-            "Resumen de costos (estimaciones aproximadas)",
-            "Lista del súper (agrupada por categoría)",
-            "Instrucciones de cocina para algunas comidas principales",
-            "AVISO DE PRECIOS:",
-            "DESCARGO DE RESPONSABILIDAD:",
-        ):
-            in_supplements = False
+        # --- Case B: new combined line (English) ---
+        # "Daily targets summary: ... Daily supplements: ..."
+        if s.lower().startswith("daily targets summary:"):
+            low = s.lower()
+            if "daily supplements:" in low:
+                idx = low.find("daily supplements:")
+                targets_part = s[:idx].rstrip(" .")
+                supp_part = s[idx + len("daily supplements:"):].strip()
 
+                out.append(targets_part.strip() + ".")
+                supplements_header = "Daily supplements:"
+                _emit_supplements_block(supp_part, supplements_header)
+                in_supplements = True
+                continue
+
+            out.append(line)
+            continue
+
+        # --- Case C: new combined line (Spanish) ---
+        # "Resumen de objetivos diarios: ... Suplementos diarios: ..."
+        if s.lower().startswith("resumen de objetivos diarios:"):
+            low = s.lower()
+            if "suplementos diarios:" in low:
+                idx = low.find("suplementos diarios:")
+                targets_part = s[:idx].rstrip(" .")
+                supp_part = s[idx + len("suplementos diarios:"):].strip()
+
+                out.append(targets_part.strip() + ".")
+                supplements_header = "Suplementos diarios:"
+                _emit_supplements_block(supp_part, supplements_header)
+                in_supplements = True
+                continue
+
+            out.append(line)
+            continue
+
+        # If standalone supplements header exists, preserve and enter supplements mode
+        if s in ("Daily supplements:", "Suplementos diarios:"):
+            out.append(s)
+            in_supplements = True
+            supplements_header = s
+            continue
+
+        # Cost summary header cleanup
         if s in ("Cost summary (rough estimates only)", "Cost summary (estimates only)"):
             if out and out[-1].strip() != "":
                 out.append("")
@@ -673,19 +734,26 @@ Otros:
         )
 
         end_sections_header = f"""
-DESPUÉS del Día 14, incluye SOLAMENTE estas 4 secciones (en este orden):
+DESPUÉS del Día 14, incluye SOLAMENTE estas 5 secciones (en este orden):
 
-1) Un resumen conciso del objetivo diario de calorías y macronutrientes para la persona principal (una sola línea, NO por día).
+1) Resumen de objetivos diarios (persona principal) — UNA sola línea:
+Resumen de objetivos diarios: <kcal> kcal, Proteína <g> g, Carbohidratos <g> g, Grasa <g> g.
 
-2) Resumen de costos (estimaciones aproximadas)
+2) Suplementos diarios (persona principal) — DEBE ser su propia sección:
+Suplementos diarios:
+- <suplemento>: <dosis> — <horario/instrucciones>
+- <suplemento>: <dosis> — <horario/instrucciones>
+(1 por línea; NO pongas suplementos en la misma línea que el resumen de macros.)
+
+3) Resumen de costos (estimaciones aproximadas)
 - Costo total de 14 días: $X
 - Promedio por semana: $Y
 
-3) Lista del súper (agrupada por categoría)
+4) Lista del súper (agrupada por categoría)
 
-4) Instrucciones de cocina para algunas comidas principales
+5) Instrucciones de cocina para algunas comidas principales
 - Incluye instrucciones SOLO para las comidas principales más complejas que usaste (NO para cada comida).
-- Apunta a 6-10 recetas en total, dependiendo de cuántas comidas complejas aparezcan.
+- Apunta a 6-10 recetas en total.
 - Para cada receta:
   Receta: <nombre tal como aparece en el plan>
   - Tiempo: ~X minutos (intenta respetar la guía de tiempo del usuario)
@@ -736,19 +804,26 @@ Other:
         )
 
         end_sections_header = f"""
-AFTER Day 14, include ONLY these 4 sections (in this order):
+AFTER Day 14, include ONLY these 5 sections (in this order):
 
-1) One concise daily macro target summary for the primary individual (single line, not per day).
+1) Daily macro target summary (primary individual) — ONE line only:
+Daily targets summary: <kcal> kcal, Protein <g> g, Carbs <g> g, Fat <g> g.
 
-2) Cost summary (rough estimates only)
+2) Daily supplements (primary individual) — MUST be its own section:
+Daily supplements:
+- <supplement>: <dose> — <timing/instructions>
+- <supplement>: <dose> — <timing/instructions>
+(1 per line; do NOT put supplements on the same line as the macro targets.)
+
+3) Cost summary (rough estimates only)
 - Total 14-day cost: $X
 - Average per week: $Y
 
-3) Grocery list (grouped by category)
+4) Grocery list (grouped by category)
 
-4) Cooking instructions for selected main meals
+5) Cooking instructions for selected main meals
 - Include instructions ONLY for the more complex main meals you used (NOT for every meal).
-- Aim for 6-10 recipes total, depending on how many complex meals appear.
+- Aim for 6-10 recipes total.
 - For each recipe:
   Recipe: <name as used in the plan>
   - Time: ~X minutes (try to respect the user's time guide)
@@ -790,7 +865,7 @@ MACRONUTRIENT PRIORITY:
 - Protein intake has been intentionally set higher to preserve lean mass during reduced caloric intake.
 - Emphasize high-quality, leucine-rich protein sources distributed across the day.
 
-SUPPLEMENTATION (INCLUDE A DAILY SUPPLEMENT SECTION IN THE PLAN):
+SUPPLEMENTATION (INCLUDE IN THE END SECTIONS ONLY):
 - Protein supplement: 20-40 g/serving (whey isolate or plant blend)
 - Multivitamin once daily
 - Vitamin B12 500-1,000 mcg daily (especially if also on metformin)
@@ -918,7 +993,6 @@ PRICING AND GROCERY COST (ESTIMATES ONLY):
 - Provide an estimated total grocery cost for all 14 days and a rough per-week average cost.
 """
 
-    # NEW: Explicit non-negative macro rule (helps the model, but we also sanitize after)
     non_negative_rule = """
 MACRO VALIDITY RULE (MANDATORY):
 - NO macro value may be negative. Never output negative grams or negative sodium.
