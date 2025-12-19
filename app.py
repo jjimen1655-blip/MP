@@ -1,7 +1,7 @@
 import os
 import re
 from dataclasses import dataclass
-from typing import Literal, Optional, Set
+from typing import Literal, Optional, Set, Tuple
 
 import streamlit as st
 from openai import OpenAI
@@ -147,47 +147,63 @@ def normalize_text_for_parsing(text: str) -> str:
     return "\n".join(fixed_lines)
 
 
-def sanitize_macro_lines(text: str) -> str:
-    """
-    SAFETY NET:
-    If the model outputs negative values in any macro line (Approx/Aprox/Aproximado),
-    clamp them to 0 so you never show negative carbs/fats/protein/kcal/sodium.
-    """
-    macro_re = re.compile(
-        r'^(?P<prefix>(Approx:|Aprox:|Aproximado:)\s*)'
-        r'(?P<kcal>-?\d+(?:\.\d+)?)\s*kcal,\s*'
-        r'P:\s*(?P<p>-?\d+(?:\.\d+)?)\s*g,\s*'
-        r'C:\s*(?P<c>-?\d+(?:\.\d+)?)\s*g,\s*'
-        r'F:\s*(?P<f>-?\d+(?:\.\d+)?)\s*g,\s*'
-        r'Na:\s*(?P<na>-?\d+(?:\.\d+)?)\s*mg\s*$'
-    )
+# ---------- MEALPLAN MACRO SANITIZATION (FIX) ----------
+_MACROS_LINE_RE = re.compile(
+    r'^(?P<prefix>Approx:|Aproximado:|Aprox:)\s*'
+    r'(?P<kcal>-?\d+(?:\.\d+)?)\s*kcal,\s*'
+    r'P:\s*(?P<p>-?\d+(?:\.\d+)?)\s*g,\s*'
+    r'C:\s*(?P<c>-?\d+(?:\.\d+)?)\s*g,\s*'
+    r'F:\s*(?P<f>-?\d+(?:\.\d+)?)\s*g,\s*'
+    r'Na:\s*(?P<na>-?\d+(?:\.\d+)?)\s*mg\s*$',
+    flags=re.IGNORECASE
+)
 
-    def clamp_num(x: str, as_int: bool = False) -> str:
-        try:
-            v = float(x)
-        except Exception:
-            v = 0.0
-        v = max(0.0, v)
-        if as_int:
-            return str(int(round(v)))
-        # grams: keep as whole number (your UI shows integers)
-        return str(int(round(v)))
+def _safe_float(x: str, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
 
+def sanitize_and_rebalance_macro_lines(text: str) -> str:
+    """
+    Fixes AI-output macro lines like:
+      Approx: 520 kcal, P: 40 g, C: -5 g, F: 28 g, Na: 900 mg
+
+    Rules:
+    - Clamp P/C/F/Na/kcal to >= 0
+    - Rebalance FAT to match calories:
+        fat_g := max(0, (kcal - 4P - 4C) / 9)
+      Then recompute kcal := 4P + 4C + 9F to keep internal consistency.
+    - Only modifies lines that match the strict "Approx/Aprox/Aproximado" pattern.
+    """
     out_lines = []
-    for line in text.splitlines():
-        m = macro_re.match(line.strip())
+    for raw in text.splitlines():
+        line = raw.rstrip("\n")
+        m = _MACROS_LINE_RE.match(line.strip())
         if not m:
             out_lines.append(line)
             continue
 
         prefix = m.group("prefix")
-        kcal = clamp_num(m.group("kcal"), as_int=True)
-        p = clamp_num(m.group("p"))
-        c = clamp_num(m.group("c"))
-        f = clamp_num(m.group("f"))
-        na = clamp_num(m.group("na"), as_int=True)
+        kcal = max(0.0, _safe_float(m.group("kcal")))
+        p = max(0.0, _safe_float(m.group("p")))
+        c = max(0.0, _safe_float(m.group("c")))
+        na = max(0.0, _safe_float(m.group("na")))
 
-        out_lines.append(f"{prefix}{kcal} kcal, P: {p} g, C: {c} g, F: {f} g, Na: {na} mg")
+        # Rebalance fat based on kcal after clamping P/C
+        fat = (kcal - (4.0 * p) - (4.0 * c)) / 9.0
+        fat = max(0.0, fat)
+
+        # Round to nice display values
+        p_i = int(round(p))
+        c_i = int(round(c))
+        fat_i = int(round(fat))
+        na_i = int(round(na))
+
+        # Recompute kcal from rounded macros so the line is consistent
+        kcal_i = int(round((4 * p_i) + (4 * c_i) + (9 * fat_i)))
+
+        out_lines.append(f"{prefix} {kcal_i} kcal, P: {p_i} g, C: {c_i} g, F: {fat_i} g, Na: {na_i} mg")
 
     return "\n".join(out_lines)
 
@@ -487,7 +503,7 @@ def calculate_macros(
     weight_for_macros = weight_current_kg if weight_source == "Current" else weight_goal_kg
     carb_cap_weight_kg = weight_current_kg if carb_cap_basis == "Current" else weight_for_macros
 
-    protein_g = max(0.0, weight_for_macros * float(protein_g_per_kg))
+    protein_g = weight_for_macros * float(protein_g_per_kg)
     kcal_protein = protein_g * 4
 
     kcal_carbs = 0.0
@@ -498,18 +514,18 @@ def calculate_macros(
     # OPTION A: carb cap + Auto fat => carbs prioritized first, then protein, then fat remainder
     # Weight gain: desired carbs used but never exceed carb cap.
     if carbs_g_per_kg_cap is not None and fat_mode == "Auto":
-        carb_cap_g = max(0.0, float(carbs_g_per_kg_cap) * float(carb_cap_weight_kg))
+        carb_cap_g = float(carbs_g_per_kg_cap) * float(carb_cap_weight_kg)
 
         if goal_mode == "Weight gain" and carbs_g_per_kg_gain is not None:
-            desired_carbs_g = max(0.0, weight_for_macros * float(carbs_g_per_kg_gain))
+            desired_carbs_g = weight_for_macros * float(carbs_g_per_kg_gain)
             carbs_g = min(desired_carbs_g, carb_cap_g)
         else:
             carbs_g = carb_cap_g
 
         kcal_carbs = carbs_g * 4
 
-        fat_min_g = max(0.0, 0.3 * weight_for_macros)
-        fat_max_g = max(fat_min_g, (1.2 * weight_for_macros) if goal_mode == "Weight gain" else (1.5 * weight_for_macros))
+        fat_min_g = 0.3 * weight_for_macros
+        fat_max_g = (1.2 * weight_for_macros) if goal_mode == "Weight gain" else (1.5 * weight_for_macros)
 
         min_fat_kcal = fat_min_g * 9
         if (kcal_protein + kcal_carbs + min_fat_kcal) > target_kcal:
@@ -532,14 +548,14 @@ def calculate_macros(
         # - Else: fat manual g/kg, carbs remainder
         # - If fat_mode Auto but no carb cap: fat fills after protein, carbs become remainder
         if goal_mode == "Weight gain" and carbs_g_per_kg_gain is not None:
-            carbs_g = max(0.0, weight_for_macros * float(carbs_g_per_kg_gain))
+            carbs_g = weight_for_macros * float(carbs_g_per_kg_gain)
             kcal_carbs = carbs_g * 4
 
             fat_kcal = target_kcal - (kcal_protein + kcal_carbs)
             fat_g = fat_kcal / 9 if fat_kcal > 0 else 0.0
 
-            fat_min_g = max(0.0, 0.6 * weight_for_macros)
-            fat_max_g = max(fat_min_g, 1.0 * weight_for_macros)
+            fat_min_g = 0.6 * weight_for_macros
+            fat_max_g = 1.0 * weight_for_macros
 
             if fat_g < fat_min_g:
                 fat_g = fat_min_g
@@ -556,8 +572,8 @@ def calculate_macros(
 
         else:
             if fat_mode == "Auto":
-                fat_min_g = max(0.0, 0.3 * weight_for_macros)
-                fat_max_g = max(fat_min_g, 1.5 * weight_for_macros)
+                fat_min_g = 0.3 * weight_for_macros
+                fat_max_g = 1.5 * weight_for_macros
                 remaining_kcal_after_protein = max(target_kcal - kcal_protein, 0.0)
 
                 fat_g = min(max((remaining_kcal_after_protein * 0.35) / 9.0, fat_min_g), fat_max_g)
@@ -566,18 +582,10 @@ def calculate_macros(
                 carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
 
             else:
-                fat_g = max(0.0, weight_for_macros * float(fat_g_per_kg_manual))
+                fat_g = weight_for_macros * float(fat_g_per_kg_manual)
                 kcal_fat = fat_g * 9
                 kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0.0)
                 carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
-
-    # Final clamp (defensive)
-    protein_g = max(0.0, protein_g)
-    fat_g = max(0.0, fat_g)
-    carbs_g = max(0.0, carbs_g)
-    kcal_protein = protein_g * 4
-    kcal_fat = fat_g * 9
-    kcal_carbs = carbs_g * 4
 
     if target_kcal > 0:
         protein_pct = kcal_protein / target_kcal * 100
@@ -910,11 +918,11 @@ PRICING AND GROCERY COST (ESTIMATES ONLY):
 - Provide an estimated total grocery cost for all 14 days and a rough per-week average cost.
 """
 
-    # NEW HARD RULE (prevents negative macros)
+    # NEW: Explicit non-negative macro rule (helps the model, but we also sanitize after)
     non_negative_rule = """
-NON-NEGATIVE MACROS RULE (MANDATORY):
-- Do NOT output negative numbers for kcal, P, C, F, or Na in any "Approx:" line.
-- If your estimate would go below 0, clamp it to 0.
+MACRO VALIDITY RULE (MANDATORY):
+- NO macro value may be negative. Never output negative grams or negative sodium.
+- If a macro would be negative due to rounding, set it to 0 and rebalance FAT (and calories) so values remain realistic.
 """
 
     return f"""
@@ -985,7 +993,6 @@ MANDATORY RULES FOR EVERY SINGLE ITEM:
 - EVERY bullet line that begins with "- " MUST be followed immediately by an "Approx:" line on the NEXT line.
 - This includes snacks, home-cooked meals, and ALL fast-food/takeout items.
 {approx_rule_note}- Always include sodium as "Na: <mg> mg" (use a rough estimate). This is especially important for fast-food and cardiac diets.
-- IMPORTANT: kcal, P, C, F, Na must NEVER be negative. Clamp to 0 if needed.
 
 FAST-FOOD NAMING RULE (when fast food is used):
 - For fast-food meals, include the restaurant name in the description, e.g.:
@@ -1064,8 +1071,7 @@ def generate_meal_plan_with_ai(
                 "role": "system",
                 "content": (
                     "You are a precise, practical meal-planning assistant for evidence-based weight management. "
-                    "Use only standard ASCII hyphens '-' for bullets and numeric ranges. "
-                    "Never output negative values for kcal, protein, carbs, fat, or sodium."
+                    "Use only standard ASCII hyphens '-' for bullets and numeric ranges."
                 ),
             },
             {"role": "user", "content": prompt},
@@ -1073,9 +1079,7 @@ def generate_meal_plan_with_ai(
     )
 
     raw_text = completion.choices[0].message.content or ""
-    raw_text = normalize_text_for_parsing(raw_text)
-    raw_text = sanitize_macro_lines(raw_text)  # NEW: clamps any negatives
-    return raw_text
+    return normalize_text_for_parsing(raw_text)
 
 
 # ---------- PDF GENERATION (UNCHANGED) ----------
@@ -1649,7 +1653,6 @@ def main():
         )
         st.session_state["carb_cap_basis"] = carb_cap_basis
 
-        # If diabetic guidance is on, use A1C band ranges; otherwise keep a generic IR selector.
         recommended_cap = None
         if diet_pattern == "Diabetic" and bool(st.session_state.get("diabetic_carb_mode", True)):
             band = st.session_state.get("a1c_band", "T2DM near goal (A1C 6.5-6.9%)")
@@ -1963,11 +1966,12 @@ def main():
                 )
 
                 clean_text = normalize_text_for_parsing(plan_text)
-                clean_text = sanitize_macro_lines(clean_text)  # NEW: clamp negatives (again, defensive)
                 clean_text = add_section_spacing(clean_text)
                 clean_text = add_recipe_spacing_and_dividers(clean_text, divider_len=48)
                 clean_text = format_end_sections(clean_text)
-                clean_text = sanitize_macro_lines(clean_text)  # NEW: final pass after formatting
+
+                # FIX: clamp negatives + rebalance fat (and kcal) on every Approx line
+                clean_text = sanitize_and_rebalance_macro_lines(clean_text)
 
                 st.session_state["plan_text"] = clean_text
                 st.session_state["plan_language"] = language
