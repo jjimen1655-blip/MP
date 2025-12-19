@@ -1,7 +1,7 @@
 import os
 import re
 from dataclasses import dataclass
-from typing import Literal, Optional, Set, Tuple
+from typing import Literal, Optional, Set
 
 import streamlit as st
 from openai import OpenAI
@@ -20,7 +20,7 @@ def activity_factor_reference_table():
             "Modifier": "1.20",
             "Label": "Sedentary",
             "What this actually means":
-                "Desk job + <5,000 steps/day; no structured exercise or <=1x/week",
+                "Desk job + <5,000 steps/day; no structured exercise or ≤1x/week",
             "Typical patient examples":
                 "Office workers, residents, drivers, remote workers",
         },
@@ -28,7 +28,7 @@ def activity_factor_reference_table():
             "Modifier": "1.30",
             "Label": "Lightly active",
             "What this actually means":
-                "5,000-7,500 steps/day OR exercise 1-3x/week (<=30 min)",
+                "5,000-7,500 steps/day OR exercise 1-3x/week (≤30 min)",
             "Typical patient examples":
                 "Dog walking, casual gym, yoga, light cycling",
         },
@@ -60,51 +60,32 @@ def activity_factor_reference_table():
 
 
 def insulin_resistance_reference():
-    st.markdown("### Insulin resistance guide (pick lower carbs when higher IR)")
+    st.markdown("### Insulin resistance guide (carb g/kg)")
+    st.caption(
+        "These are pragmatic clinical ranges, not a universal rule. Use judgement, meds, A1C, symptoms, and preferences."
+    )
     st.table([
         {
-            "IR level": "Mild",
-            "Suggested carbs": "2.0-3.0 g/kg/day",
-            "Typical profile": "Near-goal A1c; active; less central adiposity",
+            "Level": "Low / none",
+            "Typical profile": "A1C near goal, not very insulin resistant, active",
+            "Suggested carb range (g/kg/day)": "1.5-2.5",
         },
         {
-            "IR level": "Moderate",
-            "Suggested carbs": "1.5-2.0 g/kg/day",
-            "Typical profile": "Metabolic syndrome; central adiposity; A1c elevated",
+            "Level": "Moderate",
+            "Typical profile": "Typical T2DM, A1C mildly-high, some IR",
+            "Suggested carb range (g/kg/day)": "1.0-1.8",
         },
         {
-            "IR level": "High",
-            "Suggested carbs": "1.0-1.5 g/kg/day",
-            "Typical profile": "High A1c; high TG; significant central obesity; insulin use",
+            "Level": "High",
+            "Typical profile": "Significant IR, high TG, high A1C, central adiposity",
+            "Suggested carb range (g/kg/day)": "0.8-1.2",
         },
         {
-            "IR level": "Very high / select",
-            "Suggested carbs": "0.5-1.0 g/kg/day",
-            "Typical profile": "Clinician-directed low-carb trial; close follow-up",
+            "Level": "Very high / uncontrolled",
+            "Typical profile": "Poor control, very IR, frequent spikes; short-term tighter carb often helps",
+            "Suggested carb range (g/kg/day)": "0.5-1.0",
         },
     ])
-    st.caption("Pragmatic clinical ranges. Individualize based on meds, activity, and adherence.")
-
-
-def ibw_kg(sex: str, height_cm: float) -> float:
-    """
-    Devine IBW (kg).
-    Male: 50 kg + 2.3 kg per inch over 5 ft
-    Female: 45.5 kg + 2.3 kg per inch over 5 ft
-    """
-    inches_total = height_cm / 2.54
-    inches_over_60 = max(inches_total - 60.0, 0.0)
-
-    if sex.upper() == "M":
-        return 50.0 + 2.3 * inches_over_60
-    return 45.5 + 2.3 * inches_over_60
-
-
-def adjusted_body_weight_kg(actual_kg: float, ibw_kg_val: float, adj_factor: float = 0.25) -> float:
-    """
-    AdjBW = IBW + factor*(Actual - IBW)
-    """
-    return ibw_kg_val + float(adj_factor) * (float(actual_kg) - float(ibw_kg_val))
 
 
 # ---------- TEXT NORMALIZATION ----------
@@ -217,9 +198,11 @@ def add_section_spacing(text: str) -> str:
         line = raw.rstrip("\n")
         stripped = line.strip()
 
+        # Drop stray headers that sometimes appear mid-output
         if stripped in banned_single_line_headers:
             continue
 
+        # Start of Day block
         if any(stripped.startswith(p) for p in day_prefixes):
             in_day_block = True
             if out and out[-1].strip() != "":
@@ -227,9 +210,11 @@ def add_section_spacing(text: str) -> str:
             out.append(line)
             continue
 
+        # Leaving Day block when we hit end sections
         if in_day_block and (stripped in major_headers or stripped in grocery_headers):
             in_day_block = False
 
+        # Add spacing before major headers / grocery category headers (only outside day blocks)
         if not in_day_block and (stripped in major_headers or stripped in grocery_headers):
             if out and out[-1].strip() != "":
                 out.append("")
@@ -268,6 +253,7 @@ def add_recipe_spacing_and_dividers(text: str, divider_len: int = 48) -> str:
         line = raw.rstrip("\n")
         stripped = line.strip()
 
+        # Toggle on when we hit the cooking instructions header
         if stripped in recipe_section_headers:
             in_recipe_section = True
             saw_first_recipe = False
@@ -278,6 +264,7 @@ def add_recipe_spacing_and_dividers(text: str, divider_len: int = 48) -> str:
             out.append(line)
             continue
 
+        # Inside recipe section: detect a new recipe header line
         is_recipe_header = stripped.startswith("Recipe:") or stripped.startswith("Receta:")
 
         if is_recipe_header:
@@ -316,6 +303,7 @@ def format_end_sections(text: str) -> str:
         line = raw.rstrip("\n")
         s = line.strip()
 
+        # English: split the combined macro+supplements line
         if s.startswith("Daily macro target (primary individual):"):
             if "; Daily supplements" in s:
                 left, right = s.split("; Daily supplements", 1)
@@ -386,7 +374,7 @@ client = OpenAI(api_key=api_key)
 Intensity = Literal["Gentle", "Moderate", "Aggressive"]
 GoalMode = Literal["Weight loss", "Maintenance", "Weight gain"]
 TrainingVolume = Literal["Moderate (3–4 days/week)", "High volume (5–6 days/week)"]
-FatMode = Literal["manual", "auto"]
+FatMode = Literal["Auto", "Manual"]
 
 
 @dataclass
@@ -416,13 +404,17 @@ def calculate_macros(
     use_estimated_maintenance: bool = True,
     maintenance_kcal_known: Optional[float] = None,
     surplus_kcal: float = 300.0,
+
     protein_g_per_kg: float = 1.4,
-    fat_g_per_kg: float = 0.7,
-    carbs_g_per_kg_gain: Optional[float] = None,  # weight gain only
-    # NEW: diabetic carb cap + fat auto mode
+
+    # NEW (priority mode)
     carbs_g_per_kg_cap: Optional[float] = None,
-    carb_cap_weight_kg: Optional[float] = None,
-    fat_mode: FatMode = "manual",
+    carb_cap_basis: Literal["Current", "Macro weight"] = "Current",
+    fat_mode: FatMode = "Manual",
+    fat_g_per_kg_manual: float = 0.7,
+
+    # weight gain only
+    carbs_g_per_kg_gain: Optional[float] = None,
 ) -> MacroResult:
     """Calculate RMR, TDEE, target calories and macros using Mifflin-St Jeor."""
 
@@ -453,90 +445,113 @@ def calculate_macros(
     else:  # Weight gain
         target_kcal = max(maintenance_kcal + float(surplus_kcal), 1200)
 
-    # 5) Macros based on chosen weight
+    # 5) Weight used for macro math (and optionally carb cap basis)
     weight_for_macros = weight_current_kg if weight_source == "Current" else weight_goal_kg
+    carb_cap_weight_kg = weight_current_kg if carb_cap_basis == "Current" else weight_for_macros
 
-    # Protein always from g/kg setting
+    # 6) Protein from g/kg
     protein_g = weight_for_macros * float(protein_g_per_kg)
     kcal_protein = protein_g * 4
 
-    # If diabetic carb cap + auto-fat: prioritize carbs (cap), then protein, then fat remainder
-    if carbs_g_per_kg_cap is not None and carb_cap_weight_kg is not None and fat_mode == "auto":
+    kcal_carbs = 0.0
+    kcal_fat = 0.0
+    carbs_g = 0.0
+    fat_g = 0.0
+
+    # -------------------------------------------------------------------------
+    # OPTION A: If carbs cap is provided AND fat is Auto, carbs are prioritized first,
+    # then protein is already set, then fat fills remaining calories.
+    #
+    # In WEIGHT GAIN mode: if carbs_g_per_kg_gain exists, we use it as the desired carbs,
+    # but NEVER exceed the carb cap (Diabetic cap behavior).
+    # -------------------------------------------------------------------------
+    if carbs_g_per_kg_cap is not None and fat_mode == "Auto":
         carb_cap_g = float(carbs_g_per_kg_cap) * float(carb_cap_weight_kg)
-        carb_cap_g = max(carb_cap_g, 0.0)
 
-        # Guardrails for fat when auto
-        fat_min_g = 0.3 * float(weight_for_macros)
-        fat_max_g = 1.5 * float(weight_for_macros)
+        if goal_mode == "Weight gain" and carbs_g_per_kg_gain is not None:
+            desired_carbs_g = weight_for_macros * float(carbs_g_per_kg_gain)
+            carbs_g = min(desired_carbs_g, carb_cap_g)
+        else:
+            carbs_g = carb_cap_g
 
-        # First, try to use the carb cap as a target (not exceeding it)
-        carbs_g = carb_cap_g
         kcal_carbs = carbs_g * 4
 
-        # Ensure we can at least meet minimum fat; if not, reduce carbs
+        # Fat remainder with clamp; allow slightly higher max in gain mode
+        fat_min_g = 0.3 * weight_for_macros
+        fat_max_g = (1.2 * weight_for_macros) if goal_mode == "Weight gain" else (1.5 * weight_for_macros)
+
+        # Ensure we can at least hit minimum fat; if not, reduce carbs
         min_fat_kcal = fat_min_g * 9
         if (kcal_protein + kcal_carbs + min_fat_kcal) > target_kcal:
-            kcal_carbs = max(target_kcal - kcal_protein - min_fat_kcal, 0)
-            carbs_g = min(carb_cap_g, kcal_carbs / 4 if kcal_carbs > 0 else 0.0)
+            kcal_carbs = max(target_kcal - kcal_protein - min_fat_kcal, 0.0)
+            carbs_g = min(carbs_g, (kcal_carbs / 4.0) if kcal_carbs > 0 else 0.0)
             kcal_carbs = carbs_g * 4
 
-        # Fat is remainder
-        fat_kcal = max(target_kcal - (kcal_protein + kcal_carbs), 0)
-        fat_g = fat_kcal / 9 if fat_kcal > 0 else 0.0
-
-        # Clamp fat; reallocate remainder to carbs (still capped)
-        if fat_g < fat_min_g:
-            fat_g = fat_min_g
-        elif fat_g > fat_max_g:
-            fat_g = fat_max_g
-
-        kcal_fat = fat_g * 9
-        kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0)
-        carbs_g = min(carb_cap_g, kcal_carbs / 4 if kcal_carbs > 0 else 0.0)
-        kcal_carbs = carbs_g * 4
-
-        # Recompute fat one last time from remainder (respecting clamp)
-        fat_kcal = max(target_kcal - (kcal_protein + kcal_carbs), 0)
-        fat_g = fat_kcal / 9 if fat_kcal > 0 else 0.0
+        fat_kcal = max(target_kcal - (kcal_protein + kcal_carbs), 0.0)
+        fat_g = (fat_kcal / 9.0) if fat_kcal > 0 else 0.0
         fat_g = max(fat_min_g, min(fat_g, fat_max_g))
         kcal_fat = fat_g * 9
 
-    # Weight gain uses carbs g/kg, fat remainder with clamp (your existing logic)
-    elif goal_mode == "Weight gain" and carbs_g_per_kg_gain is not None:
-        carbs_g = weight_for_macros * float(carbs_g_per_kg_gain)
+        # If fat hits clamp and calories still remain, allocate back to carbs
+        kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0.0)
+        carbs_g = min(carb_cap_g, (kcal_carbs / 4.0) if kcal_carbs > 0 else 0.0)
         kcal_carbs = carbs_g * 4
 
-        fat_kcal = target_kcal - (kcal_protein + kcal_carbs)
-        fat_g = fat_kcal / 9 if fat_kcal > 0 else 0.0
-
-        fat_min_g = 0.6 * weight_for_macros
-        fat_max_g = 1.0 * weight_for_macros
-
-        if fat_g < fat_min_g:
-            fat_g = fat_min_g
-            kcal_fat = fat_g * 9
-            kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0)
-            carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
-        elif fat_g > fat_max_g:
-            fat_g = fat_max_g
-            kcal_fat = fat_g * 9
-            kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0)
-            carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
-        else:
-            kcal_fat = fat_g * 9
-
     else:
-        # loss + maintenance + fallback gain: fat g/kg, carbs remainder
-        fat_g = weight_for_macros * float(fat_g_per_kg)
-        kcal_fat = fat_g * 9
-        kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0)
-        carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
+        # ---------------------------------------------------------------------
+        # Default behavior:
+        # - Weight gain: carbs targeted (g/kg) if provided, fat remainder with clamp 0.6-1.0 g/kg
+        # - Else: fat manual g/kg, carbs remainder
+        # - If fat_mode Auto but no carb cap: fat fills after protein, carbs become remainder
+        # ---------------------------------------------------------------------
+        if goal_mode == "Weight gain" and carbs_g_per_kg_gain is not None:
+            carbs_g = weight_for_macros * float(carbs_g_per_kg_gain)
+            kcal_carbs = carbs_g * 4
+
+            fat_kcal = target_kcal - (kcal_protein + kcal_carbs)
+            fat_g = fat_kcal / 9 if fat_kcal > 0 else 0.0
+
+            fat_min_g = 0.6 * weight_for_macros
+            fat_max_g = 1.0 * weight_for_macros
+
+            if fat_g < fat_min_g:
+                fat_g = fat_min_g
+                kcal_fat = fat_g * 9
+                kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0.0)
+                carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
+            elif fat_g > fat_max_g:
+                fat_g = fat_max_g
+                kcal_fat = fat_g * 9
+                kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0.0)
+                carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
+            else:
+                kcal_fat = fat_g * 9
+
+        else:
+            if fat_mode == "Auto":
+                # Protein first, fat fills remainder within a reasonable clamp, carbs remainder
+                fat_min_g = 0.3 * weight_for_macros
+                fat_max_g = 1.5 * weight_for_macros
+                remaining_kcal_after_protein = max(target_kcal - kcal_protein, 0.0)
+
+                # set fat to midpoint-ish by default, but ensure carbs still exist if possible
+                fat_g = min(max((remaining_kcal_after_protein * 0.35) / 9.0, fat_min_g), fat_max_g)
+                kcal_fat = fat_g * 9
+                kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0.0)
+                carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
+
+            else:
+                # Manual fat g/kg, carbs remainder
+                fat_g = weight_for_macros * float(fat_g_per_kg_manual)
+                kcal_fat = fat_g * 9
+                kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0.0)
+                carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
 
     # Percentages
     if target_kcal > 0:
         protein_pct = kcal_protein / target_kcal * 100
-        fat_pct = (kcal_fat / target_kcal * 100) if "kcal_fat" in locals() else 0.0
-        carbs_pct = (kcal_carbs / target_kcal * 100) if "kcal_carbs" in locals() else 0.0
+        fat_pct = kcal_fat / target_kcal * 100
+        carbs_pct = kcal_carbs / target_kcal * 100
     else:
         protein_pct = fat_pct = carbs_pct = 0.0
 
@@ -574,8 +589,6 @@ def build_mealplan_prompt(
     meal_prep_style: str,
     avg_prep_minutes: int,
     cooking_skill: str,
-    # NEW: diabetic carb hard rule
-    diabetic_carb_cap_g: Optional[float] = None,
 ):
     if language == "Spanish":
         lang_note = (
@@ -719,7 +732,6 @@ GOAL MODE: MAINTENANCE
 GOAL MODE: WEIGHT GAIN
 - The calorie target already includes a surplus for weight gain.
 - Prioritize lean mass support: adequate protein distribution across the day, sufficient carbohydrates for training performance, and fats for hormonal support.
-- Carbohydrates were targeted using a training-volume g/kg guideline; keep carbs supportive of training performance.
 - Avoid "dirty bulk" patterns (excess ultra-processed foods); keep choices mostly nutrient-dense.
 """
     else:
@@ -740,7 +752,11 @@ MACRONUTRIENT PRIORITY:
 - Emphasize high-quality, leucine-rich protein sources distributed across the day.
 
 SUPPLEMENTATION (INCLUDE A DAILY SUPPLEMENT SECTION IN THE PLAN):
-(unchanged)
+- Protein supplement: 20-40 g/serving (whey isolate or plant blend)
+- Multivitamin once daily
+- Vitamin B12 500-1,000 mcg daily (especially if also on metformin)
+- Electrolytes/hydration support as needed
+- Consider magnesium/fiber if constipation
 """
 
     clinical_note = ""
@@ -762,8 +778,6 @@ CLINICAL DIET PATTERN: Diabetic diet for active diabetes.
 - Avoid sugary drinks, juice, desserts; minimize refined carbs and added sugars.
 - Pair carbohydrates with protein and/or fat to reduce postprandial glucose spikes.
 """
-        if diabetic_carb_cap_g is not None:
-            clinical_note += f"\n- HARD RULE: Keep total carbohydrates <= {int(diabetic_carb_cap_g)} g/day (approx).\n"
     elif diet_pattern == "Renal (ESRD / CKD 4-5)":
         clinical_note = """
 CLINICAL DIET PATTERN: Renal diet for ESRD or CKD stage 4-5 (general guidance, not individualized).
@@ -836,7 +850,6 @@ TIME AVAILABLE TO COOK (GUIDE, NOT STRICT):
 COOKING SKILL LEVEL:
 - Skill level: {cooking_skill}
 - If Beginner: keep cooking methods very simple and include a short instruction section at the end ONLY for the more complex main meals you used.
-- If Intermediate/Advanced: instructions section can be shorter or omitted unless a meal is unusually complex.
 """
 
     household_note = ""
@@ -934,7 +947,9 @@ MANDATORY RULES FOR EVERY SINGLE ITEM:
 {approx_rule_note}- Always include sodium as "Na: <mg> mg" (use a rough estimate). This is especially important for fast-food and cardiac diets.
 
 FAST-FOOD NAMING RULE (when fast food is used):
-- For fast-food meals, include the restaurant name in the description.
+- For fast-food meals, include the restaurant name in the description, e.g.:
+  "- Lunch: Chick-fil-A Grilled Chicken Sandwich"
+  "  Approx: ..."
 
 NO EXTRA TEXT RULE:
 - Do NOT add any commentary, tips, explanations, or extra headers inside days.
@@ -978,7 +993,6 @@ def generate_meal_plan_with_ai(
     meal_prep_style: str,
     avg_prep_minutes: int,
     cooking_skill: str,
-    diabetic_carb_cap_g: Optional[float] = None,
 ) -> str:
     prompt = build_mealplan_prompt(
         macros=macros,
@@ -1000,7 +1014,6 @@ def generate_meal_plan_with_ai(
         meal_prep_style=meal_prep_style,
         avg_prep_minutes=int(avg_prep_minutes),
         cooking_skill=str(cooking_skill),
-        diabetic_carb_cap_g=diabetic_carb_cap_g,
     )
 
     completion = client.chat.completions.create(
@@ -1357,9 +1370,15 @@ def main():
     if "using_glp1" not in st.session_state:
         st.session_state["using_glp1"] = False
 
-    # NEW: diabetic carb cap state
-    if "carbs_g_per_kg" not in st.session_state:
-        st.session_state["carbs_g_per_kg"] = 1.8  # moderate default
+    # NEW: defaults for carb-cap + fat mode
+    if "enable_carb_cap" not in st.session_state:
+        st.session_state["enable_carb_cap"] = False
+    if "carbs_g_per_kg_cap" not in st.session_state:
+        st.session_state["carbs_g_per_kg_cap"] = 1.2
+    if "carb_cap_basis" not in st.session_state:
+        st.session_state["carb_cap_basis"] = "Current"
+    if "fat_mode" not in st.session_state:
+        st.session_state["fat_mode"] = "Manual"
 
     # 0) MODE SELECTOR
     goal_mode: GoalMode = st.selectbox(
@@ -1453,21 +1472,28 @@ def main():
             max_value=900.0,
             value=300.0,
             step=50.0,
-            help="Typical evidence-based surplus: +250-500 kcal/day."
+            help="Typical evidence-based surplus: +250–500 kcal/day."
         )
         est_gain_kg_per_week = (surplus_kcal * 7) / 7700.0
         st.caption(f"Estimated gain from surplus: ~{est_gain_kg_per_week:.2f} kg/week (rough estimate).")
         min_gain = float(weight_current_kg) * 0.0025
         max_gain = float(weight_current_kg) * 0.005
-        st.caption(f"Recommended gain range: ~{min_gain:.2f} to {max_gain:.2f} kg/week (0.25-0.5% BW/week).")
+        st.caption(f"Recommended gain range: ~{min_gain:.2f} to {max_gain:.2f} kg/week (0.25–0.5% BW/week).")
 
-    # 5) Clinical diet pattern (above macros)
+    # 5) Clinical diet pattern
     st.subheader("5. Clinical diet pattern (optional)")
     diet_pattern = st.selectbox(
         "Apply a medical diet template",
         options=["None", "Cardiac (CHF / low sodium)", "Diabetic", "Renal (ESRD / CKD 4-5)"],
-        help="Adds extra constraints to the meal plan. If 'Diabetic' is selected, carbs are capped (g/kg) and fat can be auto-calculated."
+        help="Adds extra constraints to the meal plan. If you enable carb priority, it can also change macro math."
     )
+
+    # If diabetic selected, default enable carb cap + auto fat (can be changed by user)
+    if diet_pattern == "Diabetic":
+        if st.session_state.get("enable_carb_cap") is False:
+            st.session_state["enable_carb_cap"] = True
+        if st.session_state.get("fat_mode") != "Auto":
+            st.session_state["fat_mode"] = "Auto"
 
     fluid_limit_l = None
     if "Cardiac" in diet_pattern:
@@ -1477,10 +1503,9 @@ def main():
             max_value=4.0,
             value=1.5,
             step=0.25,
-            help="Typical CHF fluid restriction is around 1.5-2.0 L/day; adjust per patient."
+            help="Typical CHF fluid restriction is around 1.5–2.0 L/day; adjust per patient."
         )
 
-    # GLP-1 checkbox
     glp1_help = (
         "Check this if the patient is using a GLP-1 receptor agonist.\n\n"
         "Examples:\n"
@@ -1498,198 +1523,133 @@ def main():
         help=glp1_help
     )
 
-    if using_glp1 and st.session_state["protein_g_per_kg"] < 1.6:
-        st.session_state["protein_g_per_kg"] = 1.6
+    if using_glp1:
+        if st.session_state["protein_g_per_kg"] < 1.6:
+            st.session_state["protein_g_per_kg"] = 1.6
 
     # 3) Macro Settings
-    st.subheader("3. Macro Settings (g/kg)")
+    st.subheader("3. Macro Settings (priority mode + toggles)")
 
+    # Protein limits/helps
     if using_glp1:
         protein_min = 1.6
         protein_max = 2.0
-        protein_help = "GLP-1RA selected: protein min 1.6 g/kg; can increase up to 2.0 g/kg."
+        protein_help = "GLP-1RA selected: protein min 1.6 g/kg, adjustable up to 2.0 g/kg."
     else:
         protein_min = 0.8
         protein_max = 2.5
         if goal_mode == "Weight gain":
-            protein_help = "Weight gain evidence-based range: 1.6-2.2 g/kg/day."
+            protein_help = "Weight gain: typical evidence-based range 1.6–2.2 g/kg/day."
         elif goal_mode == "Maintenance":
             protein_help = "Maintenance: choose a reasonable protein target; adjust for training."
         else:
-            protein_help = "Evidence-supported weight loss range: 1.2-1.6 g/kg."
+            protein_help = "Weight loss: common evidence-supported range 1.2–1.6 g/kg (higher can be ok)."
 
-    if goal_mode == "Weight gain":
-        default_fat = 0.8
-        fat_help = "Weight gain common range: 0.6-1.0 g/kg/day or ~20-30% of calories."
-    elif goal_mode == "Maintenance":
-        default_fat = 0.7
-        fat_help = "Maintenance: typical clinical range is 0.5-1.0 g/kg."
-    else:
-        default_fat = 0.7
-        fat_help = "Common clinical range: 0.5-1.0 g/kg."
+    # Carb cap UI (shows for all modes; only used when enabled)
+    carb_col, carb_q = st.columns([10, 1])
+    with carb_col:
+        enable_carb_cap = st.checkbox(
+            "Enable carbohydrate target/cap (g/kg/day) and prioritize carbs → protein → fat remainder",
+            value=bool(st.session_state["enable_carb_cap"]),
+            help="If enabled, carbs are set first (g/kg cap), protein is set next, and fat becomes the remainder."
+        )
+        st.session_state["enable_carb_cap"] = bool(enable_carb_cap)
 
-    if not using_glp1:
-        if goal_mode == "Weight gain" and abs(st.session_state["protein_g_per_kg"] - 1.4) < 1e-6:
-            st.session_state["protein_g_per_kg"] = 1.8
+    with carb_q:
+        with st.popover("❓"):
+            insulin_resistance_reference()
 
-    if "fat_initialized" not in st.session_state:
-        st.session_state["fat_g_per_kg"] = float(default_fat)
-        st.session_state["fat_initialized"] = True
+    carbs_g_per_kg_cap: Optional[float] = None
+    carb_cap_basis = st.session_state.get("carb_cap_basis", "Current")
 
-    # NEW: If diabetic, show a 3rd column for carb cap + IR popover + weight-basis toggles.
-    diabetic_carb_cap_g = None
-    carbs_g_per_kg_cap = None
-    carb_cap_weight_kg = None
-    fat_mode: FatMode = "manual"
-    carb_cap_basis = None
-    adj_factor = 0.25
+    if enable_carb_cap:
+        carb_cap_basis = st.selectbox(
+            "Carb cap is based on which body weight?",
+            options=["Current", "Macro weight"],
+            index=0 if st.session_state.get("carb_cap_basis", "Current") == "Current" else 1,
+            help="Many clinicians prefer carb caps based on CURRENT weight. Macro weight uses your selected macro weight source."
+        )
+        st.session_state["carb_cap_basis"] = carb_cap_basis
 
-    if diet_pattern == "Diabetic":
-        col3, col4, col5 = st.columns(3)
-
-        with col3:
-            protein_g_per_kg = st.number_input(
-                "Protein (g/kg for macro weight)",
-                min_value=float(protein_min),
-                max_value=float(protein_max),
-                value=float(st.session_state["protein_g_per_kg"]),
-                step=0.1,
-                help=protein_help,
-                key="protein_g_per_kg_input",
-            )
-            st.session_state["protein_g_per_kg"] = float(protein_g_per_kg)
-
-        with col4:
-            # You can still allow manual fat if desired, but auto is recommended for diabetic
-            fat_auto = st.checkbox(
-                "Auto-calc fat from remaining calories (recommended for Diabetic)",
-                value=True,
-                help="Diabetic mode can cap carbs first, hit protein, then compute fat from remaining calories."
-            )
-            fat_mode = "auto" if fat_auto else "manual"
-
-            fat_g_per_kg = st.number_input(
-                "Fat (g/kg for macro weight)",
-                min_value=0.3,
-                max_value=1.5,
-                value=float(st.session_state["fat_g_per_kg"]),
-                step=0.1,
-                help=(fat_help + " (Ignored if auto-fat is enabled.)"),
-                key="fat_g_per_kg_input",
-                disabled=fat_auto,
-            )
-            st.session_state["fat_g_per_kg"] = float(fat_g_per_kg)
-
-        with col5:
-            st.markdown("**Diabetic carb cap**")
-
-            ir_level = st.selectbox(
-                "Insulin resistance level",
-                options=["Mild", "Moderate", "High", "Very high / select cases"],
-                index=1,
-            )
-            ir_defaults = {"Mild": 2.5, "Moderate": 1.8, "High": 1.2, "Very high / select cases": 0.8}
-
-            # Carb cap input + popover
-            carb_colA, carb_colB = st.columns([10, 1])
-            with carb_colA:
-                carbs_g_per_kg_cap = st.number_input(
-                    "Carbs (g/kg) cap",
-                    min_value=0.5,
-                    max_value=3.5,
-                    value=float(st.session_state["carbs_g_per_kg"]),
-                    step=0.1,
-                    help="Daily carb cap = (carbs g/kg) x (chosen carb-cap weight basis).",
-                )
-                st.session_state["carbs_g_per_kg"] = float(carbs_g_per_kg_cap)
-
-            with carb_colB:
-                with st.popover("❓"):
-                    insulin_resistance_reference()
-
-            if st.button("Apply recommended cap"):
-                st.session_state["carbs_g_per_kg"] = ir_defaults[ir_level]
-                st.rerun()
-
-            carb_cap_basis = st.selectbox(
-                "Carb-cap weight basis",
-                options=[
-                    "Adjusted body weight (AdjBW) - recommended",
-                    "Current weight (Actual)",
-                    "Goal weight",
-                    "Ideal body weight (IBW)",
-                ],
-                index=0,
-                help="Controls what weight is used ONLY for the diabetic carbohydrate cap.",
-            )
-
-            if carb_cap_basis.startswith("Adjusted"):
-                adj_factor = st.slider(
-                    "AdjBW factor",
-                    min_value=0.20,
-                    max_value=0.40,
-                    value=0.25,
-                    step=0.05,
-                    help="AdjBW = IBW + factor*(Actual - IBW). Common: 0.25 or 0.40.",
-                )
-
-        # Compute carb-cap weight now (so user sees the cap live)
-        _ibw = ibw_kg(sex=sex, height_cm=float(height_cm))
-        if carb_cap_basis == "Ideal body weight (IBW)":
-            carb_cap_weight_kg = _ibw
-        elif carb_cap_basis == "Goal weight":
-            carb_cap_weight_kg = float(weight_goal_kg)
-        elif carb_cap_basis == "Current weight (Actual)":
-            carb_cap_weight_kg = float(weight_current_kg)
-        else:
-            adjbw = adjusted_body_weight_kg(
-                actual_kg=float(weight_current_kg),
-                ibw_kg_val=float(_ibw),
-                adj_factor=float(adj_factor),
-            )
-            carb_cap_weight_kg = max(float(_ibw), min(float(adjbw), float(weight_current_kg)))
-
-        diabetic_carb_cap_g = float(st.session_state["carbs_g_per_kg"]) * float(carb_cap_weight_kg)
-        st.caption(
-            f"Diabetic carb cap: {float(st.session_state['carbs_g_per_kg']):.1f} g/kg x {float(carb_cap_weight_kg):.1f} kg "
-            f"≈ {diabetic_carb_cap_g:.0f} g carbs/day."
+        # insulin resistance selector drives slider range defaults (especially useful for Diabetic)
+        ir_level = st.selectbox(
+            "Insulin resistance level (guides carb g/kg range)",
+            options=["Low / none", "Moderate", "High", "Very high / uncontrolled"],
+            index=2 if diet_pattern == "Diabetic" else 1,
+            help="This sets a sensible g/kg range; you can still choose the exact cap."
         )
 
-    else:
-        col3, col4 = st.columns(2)
-        with col3:
-            protein_g_per_kg = st.number_input(
-                "Protein (g/kg for macro weight)",
-                min_value=float(protein_min),
-                max_value=float(protein_max),
-                value=float(st.session_state["protein_g_per_kg"]),
-                step=0.1,
-                help=protein_help,
-                key="protein_g_per_kg_input",
-            )
-            st.session_state["protein_g_per_kg"] = float(protein_g_per_kg)
+        if ir_level == "Low / none":
+            cmin, cmax, cdef = 1.5, 2.5, 2.0
+        elif ir_level == "Moderate":
+            cmin, cmax, cdef = 1.0, 1.8, 1.4
+        elif ir_level == "High":
+            cmin, cmax, cdef = 0.8, 1.2, 1.0
+        else:
+            cmin, cmax, cdef = 0.5, 1.0, 0.8
 
-        with col4:
-            fat_g_per_kg = st.number_input(
+        if diet_pattern != "Diabetic":
+            # allow slightly wider carb caps when not diabetic
+            cmin = max(0.3, cmin)
+            cmax = max(cmax, 2.5)
+
+        carbs_g_per_kg_cap = st.slider(
+            "Carbohydrate cap (g/kg/day)",
+            min_value=float(cmin),
+            max_value=float(cmax),
+            value=float(st.session_state.get("carbs_g_per_kg_cap", cdef)),
+            step=0.1,
+            help="Carbs are set first to this cap (based on selected weight basis)."
+        )
+        st.session_state["carbs_g_per_kg_cap"] = float(carbs_g_per_kg_cap)
+
+    # Fat mode toggle
+    fat_mode = st.selectbox(
+        "Fat setting",
+        options=["Auto", "Manual"],
+        index=0 if st.session_state.get("fat_mode", "Manual") == "Auto" else 1,
+        help="Auto = fat becomes the remainder after carbs cap + protein. Manual = you set fat g/kg and carbs are remainder."
+    )
+    st.session_state["fat_mode"] = fat_mode
+
+    # Protein + manual fat side-by-side
+    col3, col4 = st.columns(2)
+    with col3:
+        protein_g_per_kg = st.number_input(
+            "Protein (g/kg for macro weight)",
+            min_value=float(protein_min),
+            max_value=float(protein_max),
+            value=float(st.session_state["protein_g_per_kg"]),
+            step=0.1,
+            help=protein_help,
+        )
+        st.session_state["protein_g_per_kg"] = float(protein_g_per_kg)
+
+    fat_g_per_kg_manual = float(st.session_state.get("fat_g_per_kg", 0.7))
+    with col4:
+        if fat_mode == "Manual":
+            fat_help = "Manual fat g/kg. Carbs become the remainder to hit calories."
+            fat_g_per_kg_manual = st.number_input(
                 "Fat (g/kg for macro weight)",
                 min_value=0.3,
                 max_value=1.5,
-                value=float(st.session_state["fat_g_per_kg"]),
+                value=float(st.session_state.get("fat_g_per_kg", 0.7)),
                 step=0.1,
                 help=fat_help,
-                key="fat_g_per_kg_input",
             )
-            st.session_state["fat_g_per_kg"] = float(fat_g_per_kg)
+            st.session_state["fat_g_per_kg"] = float(fat_g_per_kg_manual)
+        else:
+            st.info("Fat is set automatically as the remainder after carbs + protein (with safety clamps).")
 
-    # Weight gain carb slider (unchanged)
+    # Weight gain carb target (still used; in Option A, it becomes a *desired* carb target but is capped)
     carbs_g_per_kg_gain: Optional[float] = None
     if goal_mode == "Weight gain":
         st.subheader("3b. Weight gain carb target (training volume)")
         training_volume: TrainingVolume = st.selectbox(
-            "Training volume (for carb target)",
+            "Training volume (for desired carb target)",
             options=["Moderate (3–4 days/week)", "High volume (5–6 days/week)"],
             index=0,
-            help="Sets a carbohydrate g/kg target to support training performance and muscle gain."
+            help="Sets a DESIRED carbohydrate g/kg target to support training performance."
         )
 
         if training_volume.startswith("Moderate"):
@@ -1700,18 +1660,24 @@ def main():
             carbs_min, carbs_max = 4.0, 6.0
 
         carbs_g_per_kg_gain = st.slider(
-            "Carbohydrates (g/kg/day) for weight gain",
+            "Desired carbohydrates (g/kg/day) for weight gain",
             min_value=float(carbs_min),
             max_value=float(carbs_max),
             value=float(default_carbs_gkg),
             step=0.1,
-            help="Moderate training: 3-4 g/kg. High volume: 4-6 g/kg."
+            help="If carb-cap priority mode is enabled (common in diabetic), this becomes the desired target but will be capped."
         )
 
-        st.caption(
-            "Note: In Weight Gain mode, carbs are targeted first (g/kg) and fat becomes the remainder, "
-            "clamped to 0.6-1.0 g/kg. If fat hits the clamp, carbs become the remainder to keep calories on target."
-        )
+        if enable_carb_cap and carbs_g_per_kg_cap is not None:
+            st.caption(
+                "Option A active: In weight gain, carbs are set to MIN(desired gain carbs, carb cap). "
+                "Fat becomes the remainder (with clamps), so weight gain can still happen even with capped carbs."
+            )
+        else:
+            st.caption(
+                "In weight gain without carb-cap priority, carbs are targeted first (desired g/kg) and fat becomes the remainder, "
+                "clamped to 0.6–1.0 g/kg."
+            )
 
     # 4) Preferences for AI Meal Plan
     st.subheader("4. Preferences for AI Meal Plan")
@@ -1795,7 +1761,7 @@ def main():
         ],
     )
 
-    # 8b) Time available to meal prep + skill level
+    # 8b) Time available + skill level
     st.subheader("8b. Time available to meal prep (optional)")
     avg_prep_minutes = st.number_input(
         "Average time you can spend cooking/prepping per main meal (minutes)",
@@ -1832,7 +1798,6 @@ def main():
     submitted = st.button("Calculate macros and generate meal plan")
 
     if submitted:
-        # If diabetic, pass the carb cap settings and auto-fat mode into macro calculation
         macros = calculate_macros(
             sex=sex,
             age=int(age),
@@ -1846,12 +1811,15 @@ def main():
             use_estimated_maintenance=use_estimated_maintenance,
             maintenance_kcal_known=maintenance_kcal_known,
             surplus_kcal=surplus_kcal if goal_mode == "Weight gain" else 0.0,
+
             protein_g_per_kg=float(st.session_state["protein_g_per_kg"]),
-            fat_g_per_kg=float(st.session_state["fat_g_per_kg"]),
+
+            carbs_g_per_kg_cap=float(carbs_g_per_kg_cap) if (enable_carb_cap and carbs_g_per_kg_cap is not None) else None,
+            carb_cap_basis=carb_cap_basis,
+            fat_mode="Auto" if fat_mode == "Auto" else "Manual",
+            fat_g_per_kg_manual=float(fat_g_per_kg_manual),
+
             carbs_g_per_kg_gain=carbs_g_per_kg_gain,
-            carbs_g_per_kg_cap=(float(st.session_state["carbs_g_per_kg"]) if diet_pattern == "Diabetic" else None),
-            carb_cap_weight_kg=(float(carb_cap_weight_kg) if diet_pattern == "Diabetic" else None),
-            fat_mode=(fat_mode if diet_pattern == "Diabetic" else "manual"),
         )
 
         st.success("Calculated macros successfully.")
@@ -1867,9 +1835,6 @@ def main():
             st.write(f"- Protein: {macros.protein_g:.0f} g ({macros.protein_pct:.1f}% kcal)")
             st.write(f"- Fat: {macros.fat_g:.0f} g ({macros.fat_pct:.1f}% kcal)")
             st.write(f"- Carbs: {macros.carbs_g:.0f} g ({macros.carbs_pct:.1f}% kcal)")
-
-            if diet_pattern == "Diabetic" and diabetic_carb_cap_g is not None:
-                st.caption(f"Carb cap enforced (approx): <= {diabetic_carb_cap_g:.0f} g/day")
 
         st.divider()
         st.subheader("AI-Generated 14-Day Meal Plan")
@@ -1896,7 +1861,6 @@ def main():
                     meal_prep_style=meal_prep_style,
                     avg_prep_minutes=int(avg_prep_minutes),
                     cooking_skill=str(cooking_skill),
-                    diabetic_carb_cap_g=(float(diabetic_carb_cap_g) if diet_pattern == "Diabetic" else None),
                 )
 
                 clean_text = normalize_text_for_parsing(plan_text)
