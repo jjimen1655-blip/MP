@@ -60,30 +60,37 @@ def activity_factor_reference_table():
 
 
 def insulin_resistance_reference():
-    st.markdown("### Insulin resistance guide (carb g/kg)")
+    st.markdown("### A1C-based carb guidance (g/kg/day)")
     st.caption(
-        "These are pragmatic clinical ranges, not a universal rule. Use judgement, meds, A1C, symptoms, and preferences."
+        "Use these as clinical guidance bands (not diagnostic advice). "
+        "Cut points: Normal <5.7%, Prediabetes 5.7-6.4%, Diabetes >=6.5%. "
+        "Within diabetes, the 'near goal / above goal / very high' split is an internal guidance bucket."
     )
     st.table([
         {
-            "Level": "Low / none",
-            "Typical profile": "A1C near goal, not very insulin resistant, active",
+            "Band (A1C)": "Normal / no IR (<5.7%)",
+            "Suggested carb range (g/kg/day)": "2.0-3.0",
+            "Recommended cap (g/kg/day)": "3.0",
+        },
+        {
+            "Band (A1C)": "Prediabetes / mild IR (5.7-6.4%)",
             "Suggested carb range (g/kg/day)": "1.5-2.5",
+            "Recommended cap (g/kg/day)": "2.5",
         },
         {
-            "Level": "Moderate",
-            "Typical profile": "Typical T2DM, A1C mildly-high, some IR",
-            "Suggested carb range (g/kg/day)": "1.0-1.8",
+            "Band (A1C)": "T2DM near goal (6.5-6.9%)",
+            "Suggested carb range (g/kg/day)": "1.0-2.0",
+            "Recommended cap (g/kg/day)": "2.0",
         },
         {
-            "Level": "High",
-            "Typical profile": "Significant IR, high TG, high A1C, central adiposity",
-            "Suggested carb range (g/kg/day)": "0.8-1.2",
+            "Band (A1C)": "T2DM above goal (7.0-8.4%)",
+            "Suggested carb range (g/kg/day)": "0.8-1.5",
+            "Recommended cap (g/kg/day)": "1.5",
         },
         {
-            "Level": "Very high / uncontrolled",
-            "Typical profile": "Poor control, very IR, frequent spikes; short-term tighter carb often helps",
+            "Band (A1C)": "T2DM very high (>=8.5%)",
             "Suggested carb range (g/kg/day)": "0.5-1.0",
+            "Recommended cap (g/kg/day)": "1.0",
         },
     ])
 
@@ -198,11 +205,9 @@ def add_section_spacing(text: str) -> str:
         line = raw.rstrip("\n")
         stripped = line.strip()
 
-        # Drop stray headers that sometimes appear mid-output
         if stripped in banned_single_line_headers:
             continue
 
-        # Start of Day block
         if any(stripped.startswith(p) for p in day_prefixes):
             in_day_block = True
             if out and out[-1].strip() != "":
@@ -210,11 +215,9 @@ def add_section_spacing(text: str) -> str:
             out.append(line)
             continue
 
-        # Leaving Day block when we hit end sections
         if in_day_block and (stripped in major_headers or stripped in grocery_headers):
             in_day_block = False
 
-        # Add spacing before major headers / grocery category headers (only outside day blocks)
         if not in_day_block and (stripped in major_headers or stripped in grocery_headers):
             if out and out[-1].strip() != "":
                 out.append("")
@@ -253,7 +256,6 @@ def add_recipe_spacing_and_dividers(text: str, divider_len: int = 48) -> str:
         line = raw.rstrip("\n")
         stripped = line.strip()
 
-        # Toggle on when we hit the cooking instructions header
         if stripped in recipe_section_headers:
             in_recipe_section = True
             saw_first_recipe = False
@@ -264,7 +266,6 @@ def add_recipe_spacing_and_dividers(text: str, divider_len: int = 48) -> str:
             out.append(line)
             continue
 
-        # Inside recipe section: detect a new recipe header line
         is_recipe_header = stripped.startswith("Recipe:") or stripped.startswith("Receta:")
 
         if is_recipe_header:
@@ -303,7 +304,6 @@ def format_end_sections(text: str) -> str:
         line = raw.rstrip("\n")
         s = line.strip()
 
-        # English: split the combined macro+supplements line
         if s.startswith("Daily macro target (primary individual):"):
             if "; Daily supplements" in s:
                 left, right = s.split("; Daily supplements", 1)
@@ -407,7 +407,7 @@ def calculate_macros(
 
     protein_g_per_kg: float = 1.4,
 
-    # NEW (priority mode)
+    # Priority mode (carb-first)
     carbs_g_per_kg_cap: Optional[float] = None,
     carb_cap_basis: Literal["Current", "Macro weight"] = "Current",
     fat_mode: FatMode = "Manual",
@@ -418,38 +418,30 @@ def calculate_macros(
 ) -> MacroResult:
     """Calculate RMR, TDEE, target calories and macros using Mifflin-St Jeor."""
 
-    # 1) RMR using current weight
     if sex.upper() == "M":
         rmr = 10 * weight_current_kg + 6.25 * height_cm - 5 * age + 5
     else:
         rmr = 10 * weight_current_kg + 6.25 * height_cm - 5 * age - 161
 
-    # 2) Estimated TDEE
     tdee = rmr * activity_factor
 
-    # 3) Choose maintenance baseline
     if use_estimated_maintenance or (maintenance_kcal_known is None):
         maintenance_kcal = tdee
     else:
         maintenance_kcal = float(maintenance_kcal_known)
 
-    # 4) Target calories by goal mode
     if goal_mode == "Weight loss":
         deficit_map = {"Gentle": 250, "Moderate": 500, "Aggressive": 750}
         chosen_intensity: Intensity = intensity or "Moderate"
         target_kcal = max(maintenance_kcal - deficit_map[chosen_intensity], 1200)
-
     elif goal_mode == "Maintenance":
         target_kcal = max(maintenance_kcal, 1200)
-
-    else:  # Weight gain
+    else:
         target_kcal = max(maintenance_kcal + float(surplus_kcal), 1200)
 
-    # 5) Weight used for macro math (and optionally carb cap basis)
     weight_for_macros = weight_current_kg if weight_source == "Current" else weight_goal_kg
     carb_cap_weight_kg = weight_current_kg if carb_cap_basis == "Current" else weight_for_macros
 
-    # 6) Protein from g/kg
     protein_g = weight_for_macros * float(protein_g_per_kg)
     kcal_protein = protein_g * 4
 
@@ -458,13 +450,8 @@ def calculate_macros(
     carbs_g = 0.0
     fat_g = 0.0
 
-    # -------------------------------------------------------------------------
-    # OPTION A: If carbs cap is provided AND fat is Auto, carbs are prioritized first,
-    # then protein is already set, then fat fills remaining calories.
-    #
-    # In WEIGHT GAIN mode: if carbs_g_per_kg_gain exists, we use it as the desired carbs,
-    # but NEVER exceed the carb cap (Diabetic cap behavior).
-    # -------------------------------------------------------------------------
+    # OPTION A: carb cap + Auto fat => carbs prioritized first, then protein, then fat remainder
+    # Weight gain: desired carbs used but never exceed carb cap.
     if carbs_g_per_kg_cap is not None and fat_mode == "Auto":
         carb_cap_g = float(carbs_g_per_kg_cap) * float(carb_cap_weight_kg)
 
@@ -476,11 +463,9 @@ def calculate_macros(
 
         kcal_carbs = carbs_g * 4
 
-        # Fat remainder with clamp; allow slightly higher max in gain mode
         fat_min_g = 0.3 * weight_for_macros
         fat_max_g = (1.2 * weight_for_macros) if goal_mode == "Weight gain" else (1.5 * weight_for_macros)
 
-        # Ensure we can at least hit minimum fat; if not, reduce carbs
         min_fat_kcal = fat_min_g * 9
         if (kcal_protein + kcal_carbs + min_fat_kcal) > target_kcal:
             kcal_carbs = max(target_kcal - kcal_protein - min_fat_kcal, 0.0)
@@ -492,18 +477,15 @@ def calculate_macros(
         fat_g = max(fat_min_g, min(fat_g, fat_max_g))
         kcal_fat = fat_g * 9
 
-        # If fat hits clamp and calories still remain, allocate back to carbs
         kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0.0)
         carbs_g = min(carb_cap_g, (kcal_carbs / 4.0) if kcal_carbs > 0 else 0.0)
         kcal_carbs = carbs_g * 4
 
     else:
-        # ---------------------------------------------------------------------
         # Default behavior:
         # - Weight gain: carbs targeted (g/kg) if provided, fat remainder with clamp 0.6-1.0 g/kg
         # - Else: fat manual g/kg, carbs remainder
         # - If fat_mode Auto but no carb cap: fat fills after protein, carbs become remainder
-        # ---------------------------------------------------------------------
         if goal_mode == "Weight gain" and carbs_g_per_kg_gain is not None:
             carbs_g = weight_for_macros * float(carbs_g_per_kg_gain)
             kcal_carbs = carbs_g * 4
@@ -529,25 +511,21 @@ def calculate_macros(
 
         else:
             if fat_mode == "Auto":
-                # Protein first, fat fills remainder within a reasonable clamp, carbs remainder
                 fat_min_g = 0.3 * weight_for_macros
                 fat_max_g = 1.5 * weight_for_macros
                 remaining_kcal_after_protein = max(target_kcal - kcal_protein, 0.0)
 
-                # set fat to midpoint-ish by default, but ensure carbs still exist if possible
                 fat_g = min(max((remaining_kcal_after_protein * 0.35) / 9.0, fat_min_g), fat_max_g)
                 kcal_fat = fat_g * 9
                 kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0.0)
                 carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
 
             else:
-                # Manual fat g/kg, carbs remainder
                 fat_g = weight_for_macros * float(fat_g_per_kg_manual)
                 kcal_fat = fat_g * 9
                 kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0.0)
                 carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
 
-    # Percentages
     if target_kcal > 0:
         protein_pct = kcal_protein / target_kcal * 100
         fat_pct = kcal_fat / target_kcal * 100
@@ -1370,7 +1348,7 @@ def main():
     if "using_glp1" not in st.session_state:
         st.session_state["using_glp1"] = False
 
-    # NEW: defaults for carb-cap + fat mode
+    # Defaults for carb-cap + fat mode
     if "enable_carb_cap" not in st.session_state:
         st.session_state["enable_carb_cap"] = False
     if "carbs_g_per_kg_cap" not in st.session_state:
@@ -1379,6 +1357,21 @@ def main():
         st.session_state["carb_cap_basis"] = "Current"
     if "fat_mode" not in st.session_state:
         st.session_state["fat_mode"] = "Manual"
+
+    # NEW: diabetic guidance state
+    if "diabetic_carb_mode" not in st.session_state:
+        st.session_state["diabetic_carb_mode"] = True
+    if "a1c_band" not in st.session_state:
+        st.session_state["a1c_band"] = "T2DM near goal (A1C 6.5-6.9%)"
+
+    # A1C-based guidance bands (cutpoints + internal guidance buckets)
+    IR_BANDS = {
+        "Normal / no IR (A1C < 5.7%)": {"cap": 3.0, "default": 2.5, "min": 2.0, "max": 3.0},
+        "Prediabetes / mild IR (A1C 5.7-6.4%)": {"cap": 2.5, "default": 2.0, "min": 1.5, "max": 2.5},
+        "T2DM near goal (A1C 6.5-6.9%)": {"cap": 2.0, "default": 1.5, "min": 1.0, "max": 2.0},
+        "T2DM above goal (A1C 7.0-8.4%)": {"cap": 1.5, "default": 1.25, "min": 0.8, "max": 1.5},
+        "T2DM very high (A1C >= 8.5%)": {"cap": 1.0, "default": 0.9, "min": 0.5, "max": 1.0},
+    }
 
     # 0) MODE SELECTOR
     goal_mode: GoalMode = st.selectbox(
@@ -1488,13 +1481,6 @@ def main():
         help="Adds extra constraints to the meal plan. If you enable carb priority, it can also change macro math."
     )
 
-    # If diabetic selected, default enable carb cap + auto fat (can be changed by user)
-    if diet_pattern == "Diabetic":
-        if st.session_state.get("enable_carb_cap") is False:
-            st.session_state["enable_carb_cap"] = True
-        if st.session_state.get("fat_mode") != "Auto":
-            st.session_state["fat_mode"] = "Auto"
-
     fluid_limit_l = None
     if "Cardiac" in diet_pattern:
         fluid_limit_l = st.number_input(
@@ -1505,6 +1491,33 @@ def main():
             step=0.25,
             help="Typical CHF fluid restriction is around 1.5–2.0 L/day; adjust per patient."
         )
+
+    # Diabetic guidance panel (A1C bands)
+    if diet_pattern == "Diabetic":
+        st.markdown("### Diabetic carb guidance (A1C-based, optional)")
+
+        diabetic_carb_mode = st.toggle(
+            "Use A1C-based carb guidance (suggests carb range + recommended cap)",
+            value=bool(st.session_state["diabetic_carb_mode"]),
+            help="Uses standard A1C cut points plus internal 'control buckets' to suggest a carb g/kg range/cap. You can still override."
+        )
+        st.session_state["diabetic_carb_mode"] = bool(diabetic_carb_mode)
+
+        if diabetic_carb_mode:
+            a1c_band = st.selectbox(
+                "A1C band (guides carb g/kg range)",
+                options=list(IR_BANDS.keys()),
+                index=list(IR_BANDS.keys()).index(st.session_state["a1c_band"])
+                if st.session_state["a1c_band"] in IR_BANDS else 2,
+                help="Normal <5.7, Prediabetes 5.7-6.4, Diabetes >=6.5. Within diabetes, these are guidance buckets."
+            )
+            st.session_state["a1c_band"] = a1c_band
+
+            # Helpful defaults when diabetic guidance is on (but user can toggle back)
+            if st.session_state.get("enable_carb_cap") is False:
+                st.session_state["enable_carb_cap"] = True
+            if st.session_state.get("fat_mode") != "Auto":
+                st.session_state["fat_mode"] = "Auto"
 
     glp1_help = (
         "Check this if the patient is using a GLP-1 receptor agonist.\n\n"
@@ -1530,7 +1543,6 @@ def main():
     # 3) Macro Settings
     st.subheader("3. Macro Settings (priority mode + toggles)")
 
-    # Protein limits/helps
     if using_glp1:
         protein_min = 1.6
         protein_max = 2.0
@@ -1545,7 +1557,7 @@ def main():
         else:
             protein_help = "Weight loss: common evidence-supported range 1.2–1.6 g/kg (higher can be ok)."
 
-    # Carb cap UI (shows for all modes; only used when enabled)
+    # Carb cap UI (shows for all modes; A1C bands drive default ranges when diabetic guidance is on)
     carb_col, carb_q = st.columns([10, 1])
     with carb_col:
         enable_carb_cap = st.checkbox(
@@ -1571,37 +1583,58 @@ def main():
         )
         st.session_state["carb_cap_basis"] = carb_cap_basis
 
-        # insulin resistance selector drives slider range defaults (especially useful for Diabetic)
-        ir_level = st.selectbox(
-            "Insulin resistance level (guides carb g/kg range)",
-            options=["Low / none", "Moderate", "High", "Very high / uncontrolled"],
-            index=2 if diet_pattern == "Diabetic" else 1,
-            help="This sets a sensible g/kg range; you can still choose the exact cap."
-        )
+        # If diabetic guidance is on, use A1C band ranges; otherwise keep a generic IR selector.
+        recommended_cap = None
+        if diet_pattern == "Diabetic" and bool(st.session_state.get("diabetic_carb_mode", True)):
+            band = st.session_state.get("a1c_band", "T2DM near goal (A1C 6.5-6.9%)")
+            band_cfg = IR_BANDS.get(band, {"min": 1.0, "max": 2.0, "default": 1.5, "cap": 2.0})
+            cmin, cmax, cdef = float(band_cfg["min"]), float(band_cfg["max"]), float(band_cfg["default"])
+            recommended_cap = float(band_cfg["cap"])
 
-        if ir_level == "Low / none":
-            cmin, cmax, cdef = 1.5, 2.5, 2.0
-        elif ir_level == "Moderate":
-            cmin, cmax, cdef = 1.0, 1.8, 1.4
-        elif ir_level == "High":
-            cmin, cmax, cdef = 0.8, 1.2, 1.0
+            st.caption(f"A1C band selected: **{band}**. Recommended carb cap: **{recommended_cap:.1f} g/kg/day**.")
+
+            carbs_g_per_kg_cap = st.slider(
+                "Carbohydrate cap (g/kg/day)",
+                min_value=float(cmin),
+                max_value=float(cmax),
+                value=float(st.session_state.get("carbs_g_per_kg_cap", cdef)),
+                step=0.1,
+                help="Carbs are set first to this cap (based on selected weight basis)."
+            )
         else:
-            cmin, cmax, cdef = 0.5, 1.0, 0.8
+            ir_level = st.selectbox(
+                "Insulin resistance level (guides carb g/kg range)",
+                options=["Low / none", "Moderate", "High", "Very high / uncontrolled"],
+                index=1,
+                help="Sets a sensible g/kg range; you can still choose the exact cap."
+            )
 
-        if diet_pattern != "Diabetic":
-            # allow slightly wider carb caps when not diabetic
-            cmin = max(0.3, cmin)
-            cmax = max(cmax, 2.5)
+            if ir_level == "Low / none":
+                cmin, cmax, cdef = 1.5, 2.5, 2.0
+            elif ir_level == "Moderate":
+                cmin, cmax, cdef = 1.0, 1.8, 1.4
+            elif ir_level == "High":
+                cmin, cmax, cdef = 0.8, 1.2, 1.0
+            else:
+                cmin, cmax, cdef = 0.5, 1.0, 0.8
 
-        carbs_g_per_kg_cap = st.slider(
-            "Carbohydrate cap (g/kg/day)",
-            min_value=float(cmin),
-            max_value=float(cmax),
-            value=float(st.session_state.get("carbs_g_per_kg_cap", cdef)),
-            step=0.1,
-            help="Carbs are set first to this cap (based on selected weight basis)."
-        )
-        st.session_state["carbs_g_per_kg_cap"] = float(carbs_g_per_kg_cap)
+            if diet_pattern != "Diabetic":
+                cmin = max(0.3, cmin)
+                cmax = max(cmax, 2.5)
+
+            carbs_g_per_kg_cap = st.slider(
+                "Carbohydrate cap (g/kg/day)",
+                min_value=float(cmin),
+                max_value=float(cmax),
+                value=float(st.session_state.get("carbs_g_per_kg_cap", cdef)),
+                step=0.1,
+                help="Carbs are set first to this cap (based on selected weight basis)."
+            )
+
+        st.session_state["carbs_g_per_kg_cap"] = float(carbs_g_per_kg_cap) if carbs_g_per_kg_cap is not None else st.session_state["carbs_g_per_kg_cap"]
+
+        if recommended_cap is not None and carbs_g_per_kg_cap is not None and float(carbs_g_per_kg_cap) > float(recommended_cap):
+            st.warning(f"Selected carbs exceed the recommended cap for this A1C band ({recommended_cap:.1f} g/kg/day).")
 
     # Fat mode toggle
     fat_mode = st.selectbox(
@@ -1641,7 +1674,7 @@ def main():
         else:
             st.info("Fat is set automatically as the remainder after carbs + protein (with safety clamps).")
 
-    # Weight gain carb target (still used; in Option A, it becomes a *desired* carb target but is capped)
+    # Weight gain carb target (still used; in Option A, it becomes a desired target but is capped)
     carbs_g_per_kg_gain: Optional[float] = None
     if goal_mode == "Weight gain":
         st.subheader("3b. Weight gain carb target (training volume)")
@@ -1665,7 +1698,7 @@ def main():
             max_value=float(carbs_max),
             value=float(default_carbs_gkg),
             step=0.1,
-            help="If carb-cap priority mode is enabled (common in diabetic), this becomes the desired target but will be capped."
+            help="If carb-cap priority mode is enabled, this becomes the desired target but will be capped."
         )
 
         if enable_carb_cap and carbs_g_per_kg_cap is not None:
