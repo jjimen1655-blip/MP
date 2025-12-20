@@ -1,7 +1,7 @@
 import os
 import re
 from dataclasses import dataclass
-from typing import Literal, Optional, Set, Tuple
+from typing import Literal, Optional, Set
 
 import streamlit as st
 from openai import OpenAI
@@ -20,7 +20,7 @@ def activity_factor_reference_table():
             "Modifier": "1.20",
             "Label": "Sedentary",
             "What this actually means":
-                "Desk job + <5,000 steps/day; no structured exercise or ≤1x/week",
+                "Desk job + <5,000 steps/day; no structured exercise or <=1x/week",
             "Typical patient examples":
                 "Office workers, residents, drivers, remote workers",
         },
@@ -28,7 +28,7 @@ def activity_factor_reference_table():
             "Modifier": "1.30",
             "Label": "Lightly active",
             "What this actually means":
-                "5,000-7,500 steps/day OR exercise 1-3x/week (≤30 min)",
+                "5,000-7,500 steps/day OR exercise 1-3x/week (<=30 min)",
             "Typical patient examples":
                 "Dog walking, casual gym, yoga, light cycling",
         },
@@ -122,8 +122,8 @@ def normalize_text_for_parsing(text: str) -> str:
         "\u201D": '"',  # right double quote
 
         # Spaces / punctuation
-        "\u00A0": " ",  # non-breaking space
-        "\u2026": "...",  # ellipsis
+        "\u00A0": " ",   # non-breaking space
+        "\u2026": "...", # ellipsis
 
         # Bullets
         "\u2022": "-",  # bullet
@@ -210,7 +210,6 @@ def sanitize_and_rebalance_macro_lines(text: str) -> str:
 
 def add_section_spacing(text: str) -> str:
     """
-    Option A:
     Adds blank lines between major sections WITHOUT inserting blank lines inside Day blocks.
     Also removes stray "Meal Plan (English/Spanish)" headers if the model inserts them.
     """
@@ -354,16 +353,15 @@ def format_end_sections(text: str) -> str:
     """
     Cleans up the post-Day-14 summary area so:
     - Daily targets summary is on its own line
-    - Daily supplements becomes its own section, one-per-line bullets, with instructions preserved
+    - Daily supplements becomes its own section, one-per-line bullets
     - Cost summary header is on its own line with spacing
     Works for both English and Spanish variants.
     """
     lines = text.splitlines()
     out = []
     in_supplements = False
-    supplements_header = None  # "Daily supplements:" or "Suplementos diarios:" (preserve language)
+    supplements_header = None
 
-    # Headers that end the supplements block
     section_starters = {
         "Cost summary (rough estimates only)",
         "Cost summary (estimates only)",
@@ -380,9 +378,8 @@ def format_end_sections(text: str) -> str:
     }
 
     def _emit_supplements_block(supp_str: str, header: str):
-        out.append("")  # blank line before supplements section
+        out.append("")
         out.append(header)
-
         items = [x.strip() for x in supp_str.split(",") if x.strip()]
         for it in items:
             if it.startswith("- "):
@@ -394,19 +391,14 @@ def format_end_sections(text: str) -> str:
         line = raw.rstrip("\n")
         s = line.strip()
 
-        # Stop supplements mode if a new major section starts
         if in_supplements and s in section_starters:
             in_supplements = False
             supplements_header = None
 
-        # --- Case A: legacy combined line ---
-        # "Daily macro target (primary individual): ...; Daily supplements: ..."
         if s.startswith("Daily macro target (primary individual):"):
             if "; Daily supplements" in s:
                 left, right = s.split("; Daily supplements", 1)
                 out.append(left.strip())
-
-                # Parse items after "Daily supplements"
                 supp_str = right
                 if ":" in supp_str:
                     supp_str = supp_str.split(":", 1)[1].strip()
@@ -423,8 +415,6 @@ def format_end_sections(text: str) -> str:
             supplements_header = None
             continue
 
-        # --- Case B: new combined line (English) ---
-        # "Daily targets summary: ... Daily supplements: ..."
         if s.lower().startswith("daily targets summary:"):
             low = s.lower()
             if "daily supplements:" in low:
@@ -441,8 +431,6 @@ def format_end_sections(text: str) -> str:
             out.append(line)
             continue
 
-        # --- Case C: new combined line (Spanish) ---
-        # "Resumen de objetivos diarios: ... Suplementos diarios: ..."
         if s.lower().startswith("resumen de objetivos diarios:"):
             low = s.lower()
             if "suplementos diarios:" in low:
@@ -459,14 +447,12 @@ def format_end_sections(text: str) -> str:
             out.append(line)
             continue
 
-        # If standalone supplements header exists, preserve and enter supplements mode
         if s in ("Daily supplements:", "Suplementos diarios:"):
             out.append(s)
             in_supplements = True
             supplements_header = s
             continue
 
-        # Cost summary header cleanup
         if s in ("Cost summary (rough estimates only)", "Cost summary (estimates only)"):
             if out and out[-1].strip() != "":
                 out.append("")
@@ -512,7 +498,7 @@ class MacroResult:
     carbs_pct: float
 
 
-# ---------- BODY WEIGHT HELPERS (NEW) ----------
+# ---------- BODY WEIGHT HELPERS ----------
 def bmi_from_kg_cm(weight_kg: float, height_cm: float) -> float:
     h_m = float(height_cm) / 100.0
     if h_m <= 0:
@@ -526,10 +512,7 @@ def ibw_kg_devine(sex: str, height_cm: float) -> float:
       Female: 45.5 kg + 2.3 kg per inch over 5 ft
     """
     inches = float(height_cm) / 2.54
-    if sex.upper() == "M":
-        base = 50.0
-    else:
-        base = 45.5
+    base = 50.0 if sex.upper() == "M" else 45.5
     return base + 2.3 * max(0.0, inches - 60.0)
 
 def adjusted_body_weight_kg(actual_kg: float, ibw_kg: float, factor: float = 0.25) -> float:
@@ -568,7 +551,6 @@ def calculate_macros(
 ) -> MacroResult:
     """Calculate RMR, TDEE, target calories and macros using Mifflin-St Jeor."""
 
-    # ---------- NEW: Use Adjusted BW for RMR/TDEE when BMI >= 40 ----------
     bmi_val = bmi_from_kg_cm(weight_current_kg, height_cm)
     weight_for_calories_kg = float(weight_current_kg)
     if bmi_val >= 40.0:
@@ -582,12 +564,8 @@ def calculate_macros(
 
     tdee = rmr * activity_factor
 
-    if use_estimated_maintenance or (maintenance_kcal_known is None):
-        maintenance_kcal = tdee
-    else:
-        maintenance_kcal = float(maintenance_kcal_known)
+    maintenance_kcal = tdee if (use_estimated_maintenance or maintenance_kcal_known is None) else float(maintenance_kcal_known)
 
-    # ---------- NEW: practical kcal cap for weight loss (sex-based) ----------
     MIN_KCAL = 1200.0
     MAX_KCAL_LOSS_M = 2400.0
     MAX_KCAL_LOSS_F = 2000.0
@@ -596,10 +574,8 @@ def calculate_macros(
         deficit_map = {"Gentle": 250, "Moderate": 500, "Aggressive": 750}
         chosen_intensity: Intensity = intensity or "Moderate"
         target_kcal = max(maintenance_kcal - deficit_map[chosen_intensity], MIN_KCAL)
-
         cap = MAX_KCAL_LOSS_M if sex.upper() == "M" else MAX_KCAL_LOSS_F
         target_kcal = min(target_kcal, cap)
-
     elif goal_mode == "Maintenance":
         target_kcal = max(maintenance_kcal, MIN_KCAL)
     else:
@@ -608,7 +584,6 @@ def calculate_macros(
     weight_for_macros = weight_current_kg if weight_source == "Current" else weight_goal_kg
     carb_cap_weight_kg = weight_current_kg if carb_cap_basis == "Current" else weight_for_macros
 
-    # ---------- NEW: optional protein cap (keeps macro logic otherwise identical) ----------
     PROTEIN_CAP_G = 220.0
 
     protein_g = weight_for_macros * float(protein_g_per_kg)
@@ -620,8 +595,6 @@ def calculate_macros(
     carbs_g = 0.0
     fat_g = 0.0
 
-    # OPTION A: carb cap + Auto fat => carbs prioritized first, then protein, then fat remainder
-    # Weight gain: desired carbs used but never exceed carb cap.
     if carbs_g_per_kg_cap is not None and fat_mode == "Auto":
         carb_cap_g = float(carbs_g_per_kg_cap) * float(carb_cap_weight_kg)
 
@@ -652,10 +625,6 @@ def calculate_macros(
         kcal_carbs = carbs_g * 4
 
     else:
-        # Default behavior:
-        # - Weight gain: carbs targeted (g/kg) if provided, fat remainder with clamp 0.6-1.0 g/kg
-        # - Else: fat manual g/kg, carbs remainder
-        # - If fat_mode Auto but no carb cap: fat fills after protein, carbs become remainder
         if goal_mode == "Weight gain" and carbs_g_per_kg_gain is not None:
             carbs_g = weight_for_macros * float(carbs_g_per_kg_gain)
             kcal_carbs = carbs_g * 4
@@ -678,7 +647,6 @@ def calculate_macros(
                 carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
             else:
                 kcal_fat = fat_g * 9
-
         else:
             if fat_mode == "Auto":
                 fat_min_g = 0.3 * weight_for_macros
@@ -689,7 +657,6 @@ def calculate_macros(
                 kcal_fat = fat_g * 9
                 kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0.0)
                 carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
-
             else:
                 fat_g = weight_for_macros * float(fat_g_per_kg_manual)
                 kcal_fat = fat_g * 9
@@ -716,6 +683,139 @@ def calculate_macros(
     )
 
 
+# ---------- DESSERT COUNT ENFORCEMENT (OPTIONAL RECOMMENDATION) ----------
+def count_desserts(plan_text: str) -> int:
+    """
+    Counts desserts based on a required tag in the meal description line.
+    We instruct the model to label desserts with [DESSERT] so it is easy to count reliably.
+    """
+    if not plan_text:
+        return 0
+    return sum(1 for line in plan_text.splitlines() if line.strip().startswith("- ") and "[DESSERT]" in line)
+
+def build_dessert_fix_prompt(
+    original_prompt: str,
+    current_plan_text: str,
+    required_desserts: int,
+    language: str,
+    big_meals_per_day: int,
+    snacks_per_day: int,
+) -> str:
+    """
+    Asks the model to ONLY adjust day blocks to hit the dessert count exactly,
+    while preserving strict formatting.
+    """
+    if language == "Spanish":
+        lang_rule = (
+            "REQUISITO DE IDIOMA: TODO debe estar en español (salvo marcas/medicamentos). "
+            "Usa SOLO guiones ASCII '-' para viñetas y rangos."
+        )
+        dessert_rule = (
+            f"- Debes incluir EXACTAMENTE {required_desserts} postres marcados con la etiqueta [POSTRE].\n"
+            "- Cada postre debe aparecer como un Snack (preferido) o reemplazar un snack existente.\n"
+            "- NO agregues comidas extra: cada día debe tener exactamente "
+            f"{big_meals_per_day + snacks_per_day} ítems.\n"
+            '- IMPORTANTE: la línea del postre DEBE incluir la etiqueta [POSTRE] en el texto del ítem.\n'
+        )
+        tag_map_note = (
+            "NOTA: Si ves [DESSERT] en el texto, cámbialo por [POSTRE] en tu salida."
+        )
+    else:
+        lang_rule = (
+            "LANGUAGE REQUIREMENT: Respond entirely in English. Use ONLY ASCII '-' for bullets and numeric ranges."
+        )
+        dessert_rule = (
+            f"- You must include EXACTLY {required_desserts} desserts tagged with [DESSERT].\n"
+            "- Each dessert must appear as a Snack (preferred) or replace an existing snack.\n"
+            "- Do NOT add extra meal slots: each day must have exactly "
+            f"{big_meals_per_day + snacks_per_day} items.\n"
+            "- IMPORTANT: the dessert line MUST include the [DESSERT] tag in the item text.\n"
+        )
+        tag_map_note = ""
+
+    return f"""
+{lang_rule}
+
+You previously generated a 14-day meal plan, but the dessert count is not correct.
+
+Your task:
+1) Output the FULL corrected plan.
+2) Keep ALL the same strict formatting rules from the original plan request.
+3) Do not add commentary or extra text.
+4) Adjust ONLY the Day blocks as needed to hit the dessert requirement exactly.
+
+Dessert requirement:
+{dessert_rule}
+{tag_map_note}
+
+Here is the original instructions/prompt you must follow:
+--------------------
+{original_prompt}
+--------------------
+
+Here is the current plan you must correct:
+--------------------
+{current_plan_text}
+--------------------
+""".strip()
+
+def maybe_fix_dessert_count_with_ai(
+    original_prompt: str,
+    plan_text: str,
+    language: str,
+    include_dessert: bool,
+    dessert_frequency: int,
+    big_meals_per_day: int,
+    snacks_per_day: int,
+) -> str:
+    """
+    Optional enforcement:
+    - If desserts are enabled, enforce EXACT dessert count by one corrective pass.
+    - Uses [DESSERT] tag in English; [POSTRE] tag in Spanish.
+    """
+    if not include_dessert:
+        return plan_text
+
+    required = int(dessert_frequency or 0)
+    if required <= 0:
+        return plan_text
+
+    # Count based on language tag
+    if language == "Spanish":
+        have = sum(1 for line in plan_text.splitlines() if line.strip().startswith("- ") and "[POSTRE]" in line)
+    else:
+        have = count_desserts(plan_text)
+
+    if have == required:
+        return plan_text
+
+    fix_prompt = build_dessert_fix_prompt(
+        original_prompt=original_prompt,
+        current_plan_text=plan_text,
+        required_desserts=required,
+        language=language,
+        big_meals_per_day=big_meals_per_day,
+        snacks_per_day=snacks_per_day,
+    )
+
+    completion = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a strict formatter. You will output plain text only. "
+                    "You will preserve required structure exactly."
+                ),
+            },
+            {"role": "user", "content": fix_prompt},
+        ],
+    )
+
+    fixed = completion.choices[0].message.content or ""
+    return normalize_text_for_parsing(fixed)
+
+
 # ---------- AI MEAL PLAN GENERATION ----------
 def build_mealplan_prompt(
     macros: MacroResult,
@@ -723,6 +823,8 @@ def build_mealplan_prompt(
     using_glp1: bool,
     allergies: str,
     dislikes: str,
+    must_include_foods: str,
+    include_strictness: str,
     preferred_store: str,
     weekly_budget: float,
     language: str,
@@ -737,6 +839,10 @@ def build_mealplan_prompt(
     meal_prep_style: str,
     avg_prep_minutes: int,
     cooking_skill: str,
+
+    include_dessert: bool,
+    dessert_frequency: int,
+    dessert_style: str,
 ):
     if language == "Spanish":
         lang_note = (
@@ -1047,6 +1153,38 @@ MACRO VALIDITY RULE (MANDATORY):
 - If a macro would be negative due to rounding, set it to 0 and rebalance FAT (and calories) so values remain realistic.
 """
 
+    must_include_note = f"""
+PREFERENCE (MUST-INCLUDE FOODS):
+- Foods the patient really wants included: {must_include_foods or "none specified"}
+- Inclusion target: {include_strictness}
+Rules:
+- Do NOT include foods from the allergy/avoid list.
+- If a must-include food conflicts with the clinical diet pattern or budget, include it in a modified form (portion/frequency/prep) or choose the closest substitute.
+""".strip()
+
+    dessert_note = ""
+    # Dessert is for enjoyment; not “high-protein strict”.
+    # We still require the Approx line (format consistency).
+    if include_dessert and int(dessert_frequency or 0) > 0:
+        if language == "Spanish":
+            dessert_note = f"""
+REGLA DE POSTRE (POR DISFRUTE):
+- Incluye aproximadamente {int(dessert_frequency)} postres en total a lo largo de 14 días (aprox. 2-4 por semana).
+- El postre debe aparecer como un Snack (preferido) o reemplazar un snack existente. NO agregues comidas extra.
+- Por claridad, etiqueta cada postre con [POSTRE] dentro de la línea del ítem.
+- Estilo de postre: {dessert_style}
+- Cada postre DEBE tener su línea "Aprox:" debajo como todos los demás ítems.
+""".strip()
+        else:
+            dessert_note = f"""
+DESSERT RULE (FOR ENJOYMENT):
+- Include about {int(dessert_frequency)} desserts total across 14 days (roughly 2-4 per week).
+- Dessert should appear as a Snack (preferred) or replace a snack. Do NOT add extra meal slots.
+- For clarity, label each dessert with [DESSERT] inside the item line.
+- Dessert style preference: {dessert_style}
+- Each dessert MUST still have its "Approx:" line like every other item.
+""".strip()
+
     return f"""
 {lang_note}
 
@@ -1068,6 +1206,8 @@ PATIENT CONSTRAINTS:
 - Weekly grocery budget: ${weekly_budget:.2f} (for the whole household)
 - Preferred grocery store or market: {preferred_store or "generic US supermarket"}
 
+{must_include_note}
+
 {clinical_note}
 {fast_food_note}
 {meal_timing_note}
@@ -1077,6 +1217,8 @@ PATIENT CONSTRAINTS:
 {variety_note}
 {household_note}
 {pricing_note}
+
+{dessert_note}
 
 {non_negative_rule}
 
@@ -1149,6 +1291,8 @@ def generate_meal_plan_with_ai(
     using_glp1: bool,
     allergies: str,
     dislikes: str,
+    must_include_foods: str,
+    include_strictness: str,
     preferred_store: str,
     weekly_budget: float,
     language: str,
@@ -1163,6 +1307,10 @@ def generate_meal_plan_with_ai(
     meal_prep_style: str,
     avg_prep_minutes: int,
     cooking_skill: str,
+
+    include_dessert: bool,
+    dessert_frequency: int,
+    dessert_style: str,
 ) -> str:
     prompt = build_mealplan_prompt(
         macros=macros,
@@ -1170,6 +1318,8 @@ def generate_meal_plan_with_ai(
         using_glp1=using_glp1,
         allergies=allergies,
         dislikes=dislikes,
+        must_include_foods=must_include_foods,
+        include_strictness=include_strictness,
         preferred_store=preferred_store,
         weekly_budget=weekly_budget,
         language=language,
@@ -1184,6 +1334,10 @@ def generate_meal_plan_with_ai(
         meal_prep_style=meal_prep_style,
         avg_prep_minutes=int(avg_prep_minutes),
         cooking_skill=str(cooking_skill),
+
+        include_dessert=include_dessert,
+        dessert_frequency=int(dessert_frequency or 0),
+        dessert_style=str(dessert_style),
     )
 
     completion = client.chat.completions.create(
@@ -1201,7 +1355,7 @@ def generate_meal_plan_with_ai(
     )
 
     raw_text = completion.choices[0].message.content or ""
-    return normalize_text_for_parsing(raw_text)
+    return normalize_text_for_parsing(raw_text), prompt
 
 
 # ---------- PDF GENERATION (UNCHANGED) ----------
@@ -1518,7 +1672,6 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
             text_obj.textLine(w)
 
     c.drawText(text_obj)
-
     c.save()
     pdf_bytes = buffer.getvalue()
     buffer.close()
@@ -1550,13 +1703,13 @@ def main():
     if "fat_mode" not in st.session_state:
         st.session_state["fat_mode"] = "Manual"
 
-    # NEW: diabetic guidance state
+    # Diabetic guidance state
     if "diabetic_carb_mode" not in st.session_state:
         st.session_state["diabetic_carb_mode"] = True
     if "a1c_band" not in st.session_state:
         st.session_state["a1c_band"] = "T2DM near goal (A1C 6.5-6.9%)"
 
-    # A1C-based guidance bands (cutpoints + internal guidance buckets)
+    # A1C-based guidance bands
     IR_BANDS = {
         "Normal / no IR (A1C < 5.7%)": {"cap": 3.0, "default": 2.5, "min": 2.0, "max": 3.0},
         "Prediabetes / mild IR (A1C 5.7-6.4%)": {"cap": 2.5, "default": 2.0, "min": 1.5, "max": 2.5},
@@ -1608,7 +1761,6 @@ def main():
     st.subheader("2. Activity & Maintenance Settings")
 
     colA, colB = st.columns([10, 1])
-
     with colA:
         activity_factor = st.number_input(
             "Activity factor",
@@ -1657,13 +1809,13 @@ def main():
             max_value=900.0,
             value=300.0,
             step=50.0,
-            help="Typical evidence-based surplus: +250–500 kcal/day."
+            help="Typical evidence-based surplus: +250-500 kcal/day."
         )
         est_gain_kg_per_week = (surplus_kcal * 7) / 7700.0
         st.caption(f"Estimated gain from surplus: ~{est_gain_kg_per_week:.2f} kg/week (rough estimate).")
         min_gain = float(weight_current_kg) * 0.0025
         max_gain = float(weight_current_kg) * 0.005
-        st.caption(f"Recommended gain range: ~{min_gain:.2f} to {max_gain:.2f} kg/week (0.25–0.5% BW/week).")
+        st.caption(f"Recommended gain range: ~{min_gain:.2f} to {max_gain:.2f} kg/week (0.25-0.5% BW/week).")
 
     # 5) Clinical diet pattern
     st.subheader("5. Clinical diet pattern (optional)")
@@ -1681,7 +1833,7 @@ def main():
             max_value=4.0,
             value=1.5,
             step=0.25,
-            help="Typical CHF fluid restriction is around 1.5–2.0 L/day; adjust per patient."
+            help="Typical CHF fluid restriction is around 1.5-2.0 L/day; adjust per patient."
         )
 
     # Diabetic guidance panel (A1C bands)
@@ -1705,7 +1857,6 @@ def main():
             )
             st.session_state["a1c_band"] = a1c_band
 
-            # Helpful defaults when diabetic guidance is on (but user can toggle back)
             if st.session_state.get("enable_carb_cap") is False:
                 st.session_state["enable_carb_cap"] = True
             if st.session_state.get("fat_mode") != "Auto":
@@ -1743,17 +1894,16 @@ def main():
         protein_min = 0.8
         protein_max = 2.5
         if goal_mode == "Weight gain":
-            protein_help = "Weight gain: typical evidence-based range 1.6–2.2 g/kg/day."
+            protein_help = "Weight gain: typical evidence-based range 1.6-2.2 g/kg/day."
         elif goal_mode == "Maintenance":
             protein_help = "Maintenance: choose a reasonable protein target; adjust for training."
         else:
-            protein_help = "Weight loss: common evidence-supported range 1.2–1.6 g/kg (higher can be ok)."
+            protein_help = "Weight loss: common evidence-supported range 1.2-1.6 g/kg (higher can be ok)."
 
-    # Carb cap UI (shows for all modes; A1C bands drive default ranges when diabetic guidance is on)
     carb_col, carb_q = st.columns([10, 1])
     with carb_col:
         enable_carb_cap = st.checkbox(
-            "Enable carbohydrate target/cap (g/kg/day) and prioritize carbs → protein → fat remainder",
+            "Enable carbohydrate target/cap (g/kg/day) and prioritize carbs -> protein -> fat remainder",
             value=bool(st.session_state["enable_carb_cap"]),
             help="If enabled, carbs are set first (g/kg cap), protein is set next, and fat becomes the remainder."
         )
@@ -1827,7 +1977,6 @@ def main():
         if recommended_cap is not None and carbs_g_per_kg_cap is not None and float(carbs_g_per_kg_cap) > float(recommended_cap):
             st.warning(f"Selected carbs exceed the recommended cap for this A1C band ({recommended_cap:.1f} g/kg/day).")
 
-    # Fat mode toggle
     fat_mode = st.selectbox(
         "Fat setting",
         options=["Auto", "Manual"],
@@ -1836,7 +1985,6 @@ def main():
     )
     st.session_state["fat_mode"] = fat_mode
 
-    # Protein + manual fat side-by-side
     col3, col4 = st.columns(2)
     with col3:
         protein_g_per_kg = st.number_input(
@@ -1865,7 +2013,6 @@ def main():
         else:
             st.info("Fat is set automatically as the remainder after carbs + protein (with safety clamps).")
 
-    # Weight gain carb target (still used; in Option A, it becomes a desired target but is capped)
     carbs_g_per_kg_gain: Optional[float] = None
     if goal_mode == "Weight gain":
         st.subheader("3b. Weight gain carb target (training volume)")
@@ -1892,22 +2039,55 @@ def main():
             help="If carb-cap priority mode is enabled, this becomes the desired target but will be capped."
         )
 
-        if enable_carb_cap and carbs_g_per_kg_cap is not None:
-            st.caption(
-                "Option A active: In weight gain, carbs are set to MIN(desired gain carbs, carb cap). "
-                "Fat becomes the remainder (with clamps), so weight gain can still happen even with capped carbs."
-            )
-        else:
-            st.caption(
-                "In weight gain without carb-cap priority, carbs are targeted first (desired g/kg) and fat becomes the remainder, "
-                "clamped to 0.6–1.0 g/kg."
-            )
-
     # 4) Preferences for AI Meal Plan
     st.subheader("4. Preferences for AI Meal Plan")
 
     allergies = st.text_input("Allergies (comma-separated)", placeholder="e.g., peanuts, shellfish")
     dislikes = st.text_input("Foods to avoid / dislikes", placeholder="e.g., mushrooms, cilantro")
+
+    # NEW: must-include foods
+    must_include_foods = st.text_input(
+        "Foods to INCLUDE / must-have favorites (comma-separated)",
+        placeholder="e.g., Greek yogurt, salmon, oats, tortillas, berries"
+    )
+    include_strictness = st.selectbox(
+        "How strictly should the plan include these foods?",
+        options=[
+            "Include most days if practical",
+            "Include several times per week",
+            "Include at least once in 14 days",
+        ],
+        index=1,
+        help="Helps the AI balance preferences with budget and medical diet constraints."
+    )
+
+    # NEW: dessert option (enjoyment, not strict)
+    include_dessert = st.checkbox(
+        "Include an occasional dessert (for enjoyment)",
+        value=False,
+        help="Adds a dessert a couple times per week while still keeping the overall plan reasonable."
+    )
+
+    dessert_frequency = 0
+    dessert_style = "Balanced / anything enjoyable"
+    if include_dessert:
+        dessert_frequency = st.selectbox(
+            "Dessert frequency (over 14 days)",
+            options=[2, 4, 6, 8],
+            index=1,  # default 4 (about twice per week)
+            help="4 = about twice per week. Desserts will be portion-controlled and counted in macros."
+        )
+        dessert_style = st.selectbox(
+            "Dessert style",
+            options=[
+                "Balanced / anything enjoyable",
+                "Classic sweets (cookies, ice cream, etc.)",
+                "Fruit-forward dessert",
+                "Chocolate-forward dessert",
+            ],
+            index=0,
+        )
+
     preferred_store = st.text_input("Preferred market/store", placeholder="e.g., H-E-B, Costco, Walmart")
     weekly_budget = st.number_input(
         "Weekly grocery budget (USD) for the household",
@@ -1973,6 +2153,11 @@ def main():
     st.subheader("7. Meal timing (optional)")
     big_meals_per_day = st.selectbox("Number of main meals per day", options=[1, 2, 3], index=2)
     snacks_per_day = st.selectbox("Number of snack times per day", options=[0, 1, 2, 3], index=2)
+
+    # Dessert needs snack slots; auto-adjust if user picked 0 snacks
+    if include_dessert and snacks_per_day == 0:
+        st.warning("Desserts are added as snack items. Snacks/day was set to 0, so snacks/day will be treated as 1 for planning.")
+        snacks_per_day = 1
 
     # 8) Cooking vs premade balance
     st.subheader("8. Cooking vs premade balance")
@@ -2065,12 +2250,14 @@ def main():
 
         with st.spinner("Calling AI to generate your meal plan..."):
             try:
-                plan_text = generate_meal_plan_with_ai(
+                plan_text_raw, original_prompt = generate_meal_plan_with_ai(
                     macros=macros,
                     goal_mode=goal_mode,
                     using_glp1=using_glp1,
                     allergies=allergies,
                     dislikes=dislikes,
+                    must_include_foods=must_include_foods,
+                    include_strictness=include_strictness,
                     preferred_store=preferred_store,
                     weekly_budget=weekly_budget,
                     language=language,
@@ -2085,14 +2272,34 @@ def main():
                     meal_prep_style=meal_prep_style,
                     avg_prep_minutes=int(avg_prep_minutes),
                     cooking_skill=str(cooking_skill),
+
+                    include_dessert=include_dessert,
+                    dessert_frequency=int(dessert_frequency or 0),
+                    dessert_style=str(dessert_style),
                 )
 
-                clean_text = normalize_text_for_parsing(plan_text)
+                clean_text = normalize_text_for_parsing(plan_text_raw)
                 clean_text = add_section_spacing(clean_text)
                 clean_text = add_recipe_spacing_and_dividers(clean_text, divider_len=48)
                 clean_text = format_end_sections(clean_text)
+                clean_text = sanitize_and_rebalance_macro_lines(clean_text)
 
-                # FIX: clamp negatives + rebalance fat (and kcal) on every Approx line
+                # OPTIONAL: enforce dessert count (one corrective pass max)
+                clean_text = maybe_fix_dessert_count_with_ai(
+                    original_prompt=original_prompt,
+                    plan_text=clean_text,
+                    language=language,
+                    include_dessert=include_dessert,
+                    dessert_frequency=int(dessert_frequency or 0),
+                    big_meals_per_day=big_meals_per_day,
+                    snacks_per_day=snacks_per_day,
+                )
+
+                # Re-run sanitizers after fix pass (safe)
+                clean_text = normalize_text_for_parsing(clean_text)
+                clean_text = add_section_spacing(clean_text)
+                clean_text = add_recipe_spacing_and_dividers(clean_text, divider_len=48)
+                clean_text = format_end_sections(clean_text)
                 clean_text = sanitize_and_rebalance_macro_lines(clean_text)
 
                 st.session_state["plan_text"] = clean_text
