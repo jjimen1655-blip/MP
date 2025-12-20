@@ -512,6 +512,34 @@ class MacroResult:
     carbs_pct: float
 
 
+# ---------- BODY WEIGHT HELPERS (NEW) ----------
+def bmi_from_kg_cm(weight_kg: float, height_cm: float) -> float:
+    h_m = float(height_cm) / 100.0
+    if h_m <= 0:
+        return 0.0
+    return float(weight_kg) / (h_m ** 2)
+
+def ibw_kg_devine(sex: str, height_cm: float) -> float:
+    """
+    Devine IBW:
+      Male: 50 kg + 2.3 kg per inch over 5 ft
+      Female: 45.5 kg + 2.3 kg per inch over 5 ft
+    """
+    inches = float(height_cm) / 2.54
+    if sex.upper() == "M":
+        base = 50.0
+    else:
+        base = 45.5
+    return base + 2.3 * max(0.0, inches - 60.0)
+
+def adjusted_body_weight_kg(actual_kg: float, ibw_kg: float, factor: float = 0.25) -> float:
+    """
+    AdjBW = IBW + factor*(Actual - IBW)
+    Common factor choices: 0.25 (conservative) to 0.40 (more aggressive).
+    """
+    return float(ibw_kg) + float(factor) * max(0.0, float(actual_kg) - float(ibw_kg))
+
+
 # ---------- CALCULATION LOGIC ----------
 def calculate_macros(
     sex: str,
@@ -540,10 +568,17 @@ def calculate_macros(
 ) -> MacroResult:
     """Calculate RMR, TDEE, target calories and macros using Mifflin-St Jeor."""
 
+    # ---------- NEW: Use Adjusted BW for RMR/TDEE when BMI >= 40 ----------
+    bmi_val = bmi_from_kg_cm(weight_current_kg, height_cm)
+    weight_for_calories_kg = float(weight_current_kg)
+    if bmi_val >= 40.0:
+        ibw = ibw_kg_devine(sex, height_cm)
+        weight_for_calories_kg = adjusted_body_weight_kg(weight_current_kg, ibw, factor=0.25)
+
     if sex.upper() == "M":
-        rmr = 10 * weight_current_kg + 6.25 * height_cm - 5 * age + 5
+        rmr = 10 * weight_for_calories_kg + 6.25 * height_cm - 5 * age + 5
     else:
-        rmr = 10 * weight_current_kg + 6.25 * height_cm - 5 * age - 161
+        rmr = 10 * weight_for_calories_kg + 6.25 * height_cm - 5 * age - 161
 
     tdee = rmr * activity_factor
 
@@ -552,19 +587,32 @@ def calculate_macros(
     else:
         maintenance_kcal = float(maintenance_kcal_known)
 
+    # ---------- NEW: practical kcal cap for weight loss (sex-based) ----------
+    MIN_KCAL = 1200.0
+    MAX_KCAL_LOSS_M = 2400.0
+    MAX_KCAL_LOSS_F = 2000.0
+
     if goal_mode == "Weight loss":
         deficit_map = {"Gentle": 250, "Moderate": 500, "Aggressive": 750}
         chosen_intensity: Intensity = intensity or "Moderate"
-        target_kcal = max(maintenance_kcal - deficit_map[chosen_intensity], 1200)
+        target_kcal = max(maintenance_kcal - deficit_map[chosen_intensity], MIN_KCAL)
+
+        cap = MAX_KCAL_LOSS_M if sex.upper() == "M" else MAX_KCAL_LOSS_F
+        target_kcal = min(target_kcal, cap)
+
     elif goal_mode == "Maintenance":
-        target_kcal = max(maintenance_kcal, 1200)
+        target_kcal = max(maintenance_kcal, MIN_KCAL)
     else:
-        target_kcal = max(maintenance_kcal + float(surplus_kcal), 1200)
+        target_kcal = max(maintenance_kcal + float(surplus_kcal), MIN_KCAL)
 
     weight_for_macros = weight_current_kg if weight_source == "Current" else weight_goal_kg
     carb_cap_weight_kg = weight_current_kg if carb_cap_basis == "Current" else weight_for_macros
 
+    # ---------- NEW: optional protein cap (keeps macro logic otherwise identical) ----------
+    PROTEIN_CAP_G = 220.0
+
     protein_g = weight_for_macros * float(protein_g_per_kg)
+    protein_g = min(protein_g, PROTEIN_CAP_G)
     kcal_protein = protein_g * 4
 
     kcal_carbs = 0.0
