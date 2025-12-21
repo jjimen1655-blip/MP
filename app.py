@@ -298,6 +298,7 @@ def add_recipe_spacing_and_dividers(text: str, divider_len: int = 48) -> str:
 
     - Does NOT insert blank lines inside Day blocks.
     - Divider is ASCII hyphens only, safe for PDF parsing.
+    - Guarantees EXACTLY one blank line before and after the divider.
     """
     lines = text.splitlines()
 
@@ -311,6 +312,10 @@ def add_recipe_spacing_and_dividers(text: str, divider_len: int = 48) -> str:
     out = []
 
     divider = "-" * max(10, int(divider_len))
+
+    def trim_trailing_blank_lines(buf):
+        while buf and buf[-1].strip() == "":
+            buf.pop()
 
     for raw in lines:
         line = raw.rstrip("\n")
@@ -330,16 +335,20 @@ def add_recipe_spacing_and_dividers(text: str, divider_len: int = 48) -> str:
 
         if is_recipe_header:
             if saw_first_recipe:
-                if out and out[-1].strip() != "":
-                    out.append("")
+                trim_trailing_blank_lines(out)
+                out.append("")
                 out.append(divider)
                 out.append("")
             else:
-                if out and out[-1].strip() != "":
-                    out.append("")
+                trim_trailing_blank_lines(out)
+                out.append("")
                 saw_first_recipe = True
 
             out.append(line)
+            continue
+
+        # Prevent multiple blank lines inside recipe section
+        if stripped == "" and out and out[-1].strip() == "":
             continue
 
         out.append(line)
@@ -347,7 +356,6 @@ def add_recipe_spacing_and_dividers(text: str, divider_len: int = 48) -> str:
     result = "\n".join(out)
     result = re.sub(r"\n{3,}", "\n\n", result).strip()
     return result
-
 
 def format_end_sections(text: str) -> str:
     """
@@ -2812,3 +2820,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
