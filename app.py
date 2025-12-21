@@ -57,6 +57,69 @@ def activity_factor_reference_table():
                 "Construction workers, competitive athletes",
         },
     ])
+def enforce_spanish_meal_labels(text: str) -> str:
+    """
+    Forces Spanish meal labels inside Day blocks if the model leaks English.
+    Only rewrites bullet labels like:
+      - Breakfast:
+      - Lunch:
+      - Dinner:
+      - Snack / Snack 1 / Snack 2
+    """
+    if not text:
+        return text
+
+    day_prefixes = ("Day ", "Día ", "Dia ")
+    in_day_block = False
+
+    label_re = re.compile(
+        r"^(?P<indent>\s*)-\s*(?P<label>[^:]{1,32})\s*:\s*(?P<rest>.*)$"
+    )
+
+    def map_label(label: str) -> str:
+        low = label.strip().lower()
+
+        if low == "breakfast":
+            return "Desayuno"
+        if low == "lunch":
+            return "Almuerzo"
+        if low == "dinner":
+            return "Cena"
+
+        m = re.match(r"snack\s*([0-9]+)?", low)
+        if m:
+            num = m.group(1)
+            return f"Merienda {num}" if num else "Merienda"
+
+        return label.strip()
+
+    out = []
+    for raw in text.splitlines():
+        line = raw.rstrip("\n")
+        stripped = line.strip()
+
+        if any(stripped.startswith(p) for p in day_prefixes):
+            in_day_block = True
+            out.append(line)
+            continue
+
+        if stripped.lower().startswith(("daily targets summary:", "resumen de objetivos diarios:")):
+            in_day_block = False
+            out.append(line)
+            continue
+
+        if in_day_block:
+            m = label_re.match(line)
+            if m:
+                indent = m.group("indent")
+                new_label = map_label(m.group("label"))
+                rest = m.group("rest")
+                out.append(f"{indent}- {new_label}: {rest}")
+                continue
+
+        out.append(line)
+
+    return "\n".join(out)
 
 
 def insulin_resistance_reference():
@@ -2742,6 +2805,8 @@ def main():
                 clean_text = add_recipe_spacing_and_dividers(clean_text, divider_len=48)
                 clean_text = format_end_sections(clean_text)
                 clean_text = sanitize_and_rebalance_macro_lines(clean_text)
+                if language == "Spanish":
+                    clean_text = enforce_spanish_meal_labels(clean_text)
 
                 # OPTIONAL UPGRADE: enforce carb-per-meal consistency (one corrective pass max)
                 if diet_pattern == "Diabetic" and bool(uses_mealtime_insulin):
@@ -2774,6 +2839,9 @@ def main():
                     clean_text = add_recipe_spacing_and_dividers(clean_text, divider_len=48)
                     clean_text = format_end_sections(clean_text)
                     clean_text = sanitize_and_rebalance_macro_lines(clean_text)
+                    if language == "Spanish":
+                        clean_text = enforce_spanish_meal_labels(clean_text)
+
 
                 # OPTIONAL: enforce dessert count (one corrective pass max)
                 clean_text = maybe_fix_dessert_count_with_ai(
@@ -2792,6 +2860,9 @@ def main():
                 clean_text = add_recipe_spacing_and_dividers(clean_text, divider_len=48)
                 clean_text = format_end_sections(clean_text)
                 clean_text = sanitize_and_rebalance_macro_lines(clean_text)
+                if language == "Spanish":
+                    clean_text = enforce_spanish_meal_labels(clean_text)
+
 
                 st.session_state["plan_text"] = clean_text
                 st.session_state["plan_language"] = language
@@ -2820,4 +2891,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
