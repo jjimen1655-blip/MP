@@ -1,7 +1,7 @@
 import os
 import re
 from dataclasses import dataclass
-from typing import Literal, Optional, Set
+from typing import Dict, List, Literal, Optional, Set, Tuple
 
 import streamlit as st
 from openai import OpenAI
@@ -683,6 +683,72 @@ def calculate_macros(
     )
 
 
+# ---------- MEALTIME INSULIN / CARB CONSISTENCY HELPERS ----------
+def parse_icr(icr: str) -> Optional[int]:
+    """
+    Returns grams of carbs per 1 unit insulin (e.g., '1:10' -> 10).
+    Reference only; not used to compute insulin doses.
+    """
+    if not icr:
+        return None
+    try:
+        parts = icr.split(":")
+        if len(parts) != 2:
+            return None
+        grams = int(parts[1].strip())
+        return grams if grams > 0 else None
+    except Exception:
+        return None
+
+
+def compute_mealtime_carb_targets(
+    daily_carbs_g: float,
+    big_meals_per_day: int,
+    snacks_per_day: int,
+    style: str
+) -> Dict[str, int]:
+    """
+    Returns target carbs per main meal and per snack (rounded ints).
+    Intended for mealtime insulin predictability (carb consistency), NOT insulin dosing.
+    """
+    daily_carbs_g = max(0.0, float(daily_carbs_g))
+    n_meals = max(1, int(big_meals_per_day))
+    n_snacks = max(0, int(snacks_per_day))
+
+    if n_snacks <= 0:
+        per_meal = int(round(daily_carbs_g / n_meals))
+        return {
+            "Daily carbs": int(round(daily_carbs_g)),
+            "Main meal target (each)": per_meal,
+            "Snack target (each)": 0,
+        }
+
+    # Default: main meals get most carbs, snacks get remainder
+    if style == "Same carbs each main meal (snacks flexible)":
+        main_total = round(daily_carbs_g * 0.90)
+        snacks_total = max(0, round(daily_carbs_g - main_total))
+        per_main = round(main_total / n_meals)
+        per_snack = round(snacks_total / n_snacks) if n_snacks else 0
+
+    elif style == "Same carbs breakfast/lunch/dinner and consistent snacks":
+        main_total = round(daily_carbs_g * 0.85)
+        snacks_total = max(0, round(daily_carbs_g - main_total))
+        per_main = round(main_total / n_meals)
+        per_snack = round(snacks_total / n_snacks) if n_snacks else 0
+
+    else:  # Custom split (advanced) - conservative defaults
+        main_total = round(daily_carbs_g * 0.80)
+        snacks_total = max(0, round(daily_carbs_g - main_total))
+        per_main = round(main_total / n_meals)
+        per_snack = round(snacks_total / n_snacks) if n_snacks else 0
+
+    return {
+        "Daily carbs": int(round(daily_carbs_g)),
+        "Main meal target (each)": int(round(per_main)),
+        "Snack target (each)": int(round(per_snack)),
+    }
+
+
 # ---------- DESSERT COUNT ENFORCEMENT (OPTIONAL RECOMMENDATION) ----------
 def count_desserts(plan_text: str) -> int:
     """
@@ -816,6 +882,275 @@ def maybe_fix_dessert_count_with_ai(
     return normalize_text_for_parsing(fixed)
 
 
+# ---------- OPTIONAL UPGRADE: CARB CONSISTENCY ENFORCEMENT (MEALTIME INSULIN MODE) ----------
+_DAY_PREFIXES = ("Day ", "Día ", "Dia ")
+_MACROS_PREFIXES = ("Approx:", "Aproximado:", "Aprox:")
+_CARBS_IN_MACROS_RE = re.compile(r"\bC:\s*(?P<c>-?\d+(?:\.\d+)?)\s*g\b", flags=re.IGNORECASE)
+
+def _extract_plan_days_and_items(plan_text: str) -> List[Dict]:
+    """
+    Parses a strict-format plan into day blocks and items.
+    Each item must be "- <label>: <desc>" followed by an Approx line.
+    Returns:
+      [
+        {"day": "Day 1", "items":[{"bullet": "...", "macros":"Approx: ..."} , ...]},
+        ...
+      ]
+    """
+    lines = plan_text.splitlines()
+    days: List[Dict] = []
+    current_day: Optional[str] = None
+    current_items: List[Dict] = []
+
+    i = 0
+    while i < len(lines):
+        s = lines[i].strip()
+
+        if any(s.startswith(p) for p in _DAY_PREFIXES):
+            if current_day is not None:
+                days.append({"day": current_day, "items": current_items})
+            current_day = s
+            current_items = []
+            i += 1
+            continue
+
+        if current_day is not None and s.startswith("- "):
+            bullet = s
+            macros_line = ""
+            j = i + 1
+            while j < len(lines):
+                look = lines[j].strip()
+                if look.startswith("- ") or any(look.startswith(p) for p in _DAY_PREFIXES):
+                    break
+                if any(look.startswith(p) for p in _MACROS_PREFIXES):
+                    macros_line = look
+                    break
+                j += 1
+
+            current_items.append({"bullet": bullet, "macros": macros_line})
+            i += 1
+            continue
+
+        i += 1
+
+    if current_day is not None:
+        days.append({"day": current_day, "items": current_items})
+
+    return days
+
+
+def _carb_from_macros_line(macros_line: str) -> Optional[float]:
+    if not macros_line:
+        return None
+    m = _CARBS_IN_MACROS_RE.search(macros_line)
+    if not m:
+        return None
+    try:
+        return float(m.group("c"))
+    except Exception:
+        return None
+
+
+def _needs_carb_fix(
+    plan_text: str,
+    big_meals_per_day: int,
+    snacks_per_day: int,
+    target_main: int,
+    target_snack: int,
+    tol_main: int = 5,
+    tol_snack: int = 5,
+) -> bool:
+    """
+    Returns True if any day has a main meal or snack outside tolerance OR
+    if parsing fails for a substantial fraction of items.
+    """
+    days = _extract_plan_days_and_items(plan_text)
+    if not days:
+        return False
+
+    total_items = 0
+    parsed_items = 0
+    out_of_range = 0
+
+    expected_per_day = max(1, int(big_meals_per_day) + int(snacks_per_day))
+
+    for d in days:
+        items = d.get("items", []) or []
+        # Only consider up to expected_per_day in case model added/removed (shouldn't, but safety)
+        items = items[:expected_per_day]
+        for idx, it in enumerate(items):
+            total_items += 1
+            c = _carb_from_macros_line(it.get("macros", ""))
+            if c is None:
+                continue
+            parsed_items += 1
+
+            is_main = idx < int(big_meals_per_day)
+            if is_main:
+                if abs(c - float(target_main)) > float(tol_main):
+                    out_of_range += 1
+            else:
+                # snacks
+                if int(snacks_per_day) > 0:
+                    if abs(c - float(target_snack)) > float(tol_snack):
+                        out_of_range += 1
+
+    # If too many macros lines are unparsable, we can't reliably enforce
+    if total_items > 0 and (parsed_items / total_items) < 0.80:
+        return True
+
+    return out_of_range > 0
+
+
+def build_carb_fix_prompt(
+    original_prompt: str,
+    current_plan_text: str,
+    language: str,
+    big_meals_per_day: int,
+    snacks_per_day: int,
+    target_main: int,
+    target_snack: int,
+    tol_main: int,
+    tol_snack: int,
+    icr_str: Optional[str],
+) -> str:
+    if language == "Spanish":
+        lang_rule = (
+            "REQUISITO DE IDIOMA: TODO debe estar en español (salvo marcas/medicamentos). "
+            "Usa SOLO guiones ASCII '-' para viñetas y rangos."
+        )
+        icr_g = parse_icr(icr_str or "")
+        icr_line = f"ICR informado por el paciente (solo referencia): 1:{icr_g} g/u" if icr_g else "ICR informado por el paciente (solo referencia): no especificado"
+
+        carb_rule = f"""
+OBJETIVO DE CONSISTENCIA DE CARBOHIDRATOS (PARA INSULINA EN COMIDAS):
+- Este plan NO calcula dosis de insulina y NO es para guiar dosis.
+- El objetivo es que el paciente pueda ver carbohidratos predecibles por comida (según su plan individual).
+- {icr_line}
+
+REGLAS ESTRICTAS:
+- Cada día debe mantener EXACTAMENTE {big_meals_per_day} comidas principales y {snacks_per_day} snacks (total {big_meals_per_day + snacks_per_day} ítems).
+- Para CADA comida principal (los primeros {big_meals_per_day} ítems del día), fija carbohidratos en: {target_main} g +/- {tol_main} g.
+- Para CADA snack (los ítems restantes del día), fija carbohidratos en: {target_snack} g +/- {tol_snack} g.
+- NO “compenses” moviendo carbohidratos de una comida a otra.
+- Mantén calorías y proteína lo más parecidas posible; ajusta porciones/fuentes de carbohidratos para corregir.
+- NO agregues texto extra; SOLO salida del plan completo.
+""".strip()
+    else:
+        lang_rule = (
+            "LANGUAGE REQUIREMENT: Respond entirely in English. Use ONLY ASCII '-' for bullets and numeric ranges."
+        )
+        icr_g = parse_icr(icr_str or "")
+        icr_line = f"Patient-reported ICR (reference only): 1:{icr_g} g/unit" if icr_g else "Patient-reported ICR (reference only): not specified"
+
+        carb_rule = f"""
+CARB CONSISTENCY TARGET (MEALTIME INSULIN SUPPORT):
+- This plan does NOT calculate insulin doses and is NOT intended to guide insulin dosing.
+- The goal is predictable carbohydrates per meal so the patient can anticipate their usual bolus needs (based on their individualized plan).
+- {icr_line}
+
+STRICT RULES:
+- Each day must keep EXACTLY {big_meals_per_day} main meals and {snacks_per_day} snacks (total {big_meals_per_day + snacks_per_day} items).
+- For EACH main meal (the first {big_meals_per_day} items in the day), set carbs to: {target_main} g +/- {tol_main} g.
+- For EACH snack (the remaining items in the day), set carbs to: {target_snack} g +/- {tol_snack} g.
+- Do NOT “shift” carbs between meals to compensate.
+- Keep calories and protein as similar as possible; adjust portions/carb sources to correct carbs.
+- Do NOT add any extra text; output the full corrected plan only.
+""".strip()
+
+    return f"""
+{lang_rule}
+
+You previously generated a 14-day meal plan, but the carb-per-meal consistency is not within target ranges.
+
+Your task:
+1) Output the FULL corrected plan.
+2) Keep ALL the same strict formatting rules from the original plan request.
+3) Do not add commentary or extra text.
+4) Adjust ONLY the Day blocks (meal descriptions + their Approx lines) as needed.
+
+{carb_rule}
+
+Here is the original instructions/prompt you must follow:
+--------------------
+{original_prompt}
+--------------------
+
+Here is the current plan you must correct:
+--------------------
+{current_plan_text}
+--------------------
+""".strip()
+
+
+def maybe_fix_carb_consistency_with_ai(
+    original_prompt: str,
+    plan_text: str,
+    language: str,
+    enable_mealtime_insulin_mode: bool,
+    big_meals_per_day: int,
+    snacks_per_day: int,
+    target_main: int,
+    target_snack: int,
+    icr_str: Optional[str],
+    tol_main: int = 5,
+    tol_snack: int = 5,
+) -> str:
+    """
+    Optional enforcement:
+    - If mealtime insulin mode is enabled, enforce per-meal carb targets with one corrective pass max.
+    - This does NOT compute insulin doses; it only standardizes meal carbohydrates.
+    """
+    if not enable_mealtime_insulin_mode:
+        return plan_text
+
+    if big_meals_per_day <= 0:
+        return plan_text
+
+    needs_fix = _needs_carb_fix(
+        plan_text=plan_text,
+        big_meals_per_day=big_meals_per_day,
+        snacks_per_day=snacks_per_day,
+        target_main=target_main,
+        target_snack=target_snack,
+        tol_main=tol_main,
+        tol_snack=tol_snack,
+    )
+
+    if not needs_fix:
+        return plan_text
+
+    fix_prompt = build_carb_fix_prompt(
+        original_prompt=original_prompt,
+        current_plan_text=plan_text,
+        language=language,
+        big_meals_per_day=big_meals_per_day,
+        snacks_per_day=snacks_per_day,
+        target_main=target_main,
+        target_snack=target_snack,
+        tol_main=tol_main,
+        tol_snack=tol_snack,
+        icr_str=icr_str,
+    )
+
+    completion = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a strict formatter. Output plain text only. "
+                    "Preserve required structure exactly. Never provide insulin dosing."
+                ),
+            },
+            {"role": "user", "content": fix_prompt},
+        ],
+    )
+
+    fixed = completion.choices[0].message.content or ""
+    return normalize_text_for_parsing(fixed)
+
+
 # ---------- AI MEAL PLAN GENERATION ----------
 def build_mealplan_prompt(
     macros: MacroResult,
@@ -843,6 +1178,11 @@ def build_mealplan_prompt(
     include_dessert: bool,
     dessert_frequency: int,
     dessert_style: str,
+
+    # NEW: mealtime insulin support (Diabetic only)
+    uses_mealtime_insulin: bool,
+    insulin_to_carb_ratio: Optional[str],
+    carb_distribution_style: Optional[str],
 ):
     if language == "Spanish":
         lang_note = (
@@ -1056,6 +1396,47 @@ CLINICAL DIET PATTERN: Renal diet for ESRD or CKD stage 4-5 (general guidance, n
 - Prefer lower-potassium fruits and vegetables and simple home-cooked meals over restaurant / fast-food when possible.
 """
 
+    # NEW: Mealtime insulin support note (Diabetic only)
+    mealtime_insulin_note = ""
+    if diet_pattern == "Diabetic" and bool(uses_mealtime_insulin):
+        style = carb_distribution_style or "Same carbs each main meal (snacks flexible)"
+        targets = compute_mealtime_carb_targets(
+            daily_carbs_g=float(macros.carbs_g),
+            big_meals_per_day=int(big_meals_per_day),
+            snacks_per_day=int(snacks_per_day),
+            style=style
+        )
+        tol_main = 5
+        tol_snack = 5
+        icr_g = parse_icr(insulin_to_carb_ratio or "")
+
+        if language == "Spanish":
+            icr_line = f"ICR informado por el paciente (solo referencia): 1:{icr_g} g/u" if icr_g else "ICR informado por el paciente (solo referencia): no especificado"
+            mealtime_insulin_note = f"""
+SOPORTE PARA INSULINA EN COMIDAS (BOLUS) - CONSISTENCIA DE CARBOHIDRATOS:
+- Este plan NO calcula dosis de insulina y NO es para guiar dosis. Es una herramienta clínica orientada a consistencia de carbohidratos.
+- El objetivo es que las comidas tengan carbohidratos predecibles para que el paciente pueda anticipar su dosis habitual (según su plan individual).
+- {icr_line}
+- Objetivos de carbohidratos para consistencia (aprox):
+  - Carbohidratos diarios: {targets.get("Daily carbs", 0)} g
+  - Objetivo por comida principal (cada una): {targets.get("Main meal target (each)", 0)} g (tolerancia +/- {tol_main} g)
+  - Objetivo por snack (cada uno): {targets.get("Snack target (each)", 0)} g (tolerancia +/- {tol_snack} g)
+- REGLA ESTRICTA: Para cada comida principal, mantén los carbohidratos dentro de ese rango. No “compenses” carbohidratos moviéndolos a otra comida.
+""".strip()
+        else:
+            icr_line = f"Patient-reported ICR (reference only): 1:{icr_g} g/unit" if icr_g else "Patient-reported ICR (reference only): not specified"
+            mealtime_insulin_note = f"""
+MEALTIME INSULIN (BOLUS) SUPPORT - CARB CONSISTENCY:
+- This plan does NOT calculate insulin doses and is NOT intended to guide insulin dosing. It is clinician-oriented carb-consistency planning.
+- The goal is predictable meal carbohydrates so the patient can anticipate their usual bolus needs (based on their individualized clinical plan).
+- {icr_line}
+- Carb targets for consistency (approx):
+  - Daily carbs: {targets.get("Daily carbs", 0)} g
+  - Target per main meal (each): {targets.get("Main meal target (each)", 0)} g (tolerance +/- {tol_main} g)
+  - Target per snack (each): {targets.get("Snack target (each)", 0)} g (tolerance +/- {tol_snack} g)
+- STRICT RULE: Keep carbs for each main meal within that range. Do not “shift” carbs between meals to compensate.
+""".strip()
+
     fast_food_note = ""
     if fast_food_chains and fast_food_percent > 0:
         chains_txt = ", ".join(fast_food_chains)
@@ -1164,7 +1545,6 @@ Rules:
 
     dessert_note = ""
     # Dessert is for enjoyment; not “high-protein strict”.
-    # We still require the Approx line (format consistency).
     if include_dessert and int(dessert_frequency or 0) > 0:
         if language == "Spanish":
             dessert_note = f"""
@@ -1209,6 +1589,8 @@ PATIENT CONSTRAINTS:
 {must_include_note}
 
 {clinical_note}
+{mealtime_insulin_note}
+
 {fast_food_note}
 {meal_timing_note}
 {prep_note}
@@ -1311,7 +1693,12 @@ def generate_meal_plan_with_ai(
     include_dessert: bool,
     dessert_frequency: int,
     dessert_style: str,
-) -> str:
+
+    # NEW
+    uses_mealtime_insulin: bool,
+    insulin_to_carb_ratio: Optional[str],
+    carb_distribution_style: Optional[str],
+) -> Tuple[str, str]:
     prompt = build_mealplan_prompt(
         macros=macros,
         goal_mode=goal_mode,
@@ -1338,6 +1725,10 @@ def generate_meal_plan_with_ai(
         include_dessert=include_dessert,
         dessert_frequency=int(dessert_frequency or 0),
         dessert_style=str(dessert_style),
+
+        uses_mealtime_insulin=bool(uses_mealtime_insulin),
+        insulin_to_carb_ratio=insulin_to_carb_ratio,
+        carb_distribution_style=carb_distribution_style,
     )
 
     completion = client.chat.completions.create(
@@ -1347,7 +1738,8 @@ def generate_meal_plan_with_ai(
                 "role": "system",
                 "content": (
                     "You are a precise, practical meal-planning assistant for evidence-based weight management. "
-                    "Use only standard ASCII hyphens '-' for bullets and numeric ranges."
+                    "Use only standard ASCII hyphens '-' for bullets and numeric ranges. "
+                    "Never provide insulin dosing."
                 ),
             },
             {"role": "user", "content": prompt},
@@ -1709,6 +2101,14 @@ def main():
     if "a1c_band" not in st.session_state:
         st.session_state["a1c_band"] = "T2DM near goal (A1C 6.5-6.9%)"
 
+    # NEW: Mealtime insulin state
+    if "uses_mealtime_insulin" not in st.session_state:
+        st.session_state["uses_mealtime_insulin"] = False
+    if "insulin_to_carb_ratio" not in st.session_state:
+        st.session_state["insulin_to_carb_ratio"] = "1:10"
+    if "carb_distribution_style" not in st.session_state:
+        st.session_state["carb_distribution_style"] = "Same carbs each main meal (snacks flexible)"
+
     # A1C-based guidance bands
     IR_BANDS = {
         "Normal / no IR (A1C < 5.7%)": {"cap": 3.0, "default": 2.5, "min": 2.0, "max": 3.0},
@@ -1836,7 +2236,11 @@ def main():
             help="Typical CHF fluid restriction is around 1.5-2.0 L/day; adjust per patient."
         )
 
-    # Diabetic guidance panel (A1C bands)
+    # Diabetic guidance panel (A1C bands) + Mealtime insulin support
+    uses_mealtime_insulin = False
+    insulin_to_carb_ratio = None
+    carb_distribution_style = None
+
     if diet_pattern == "Diabetic":
         st.markdown("### Diabetic carb guidance (A1C-based, optional)")
 
@@ -1861,6 +2265,49 @@ def main():
                 st.session_state["enable_carb_cap"] = True
             if st.session_state.get("fat_mode") != "Auto":
                 st.session_state["fat_mode"] = "Auto"
+
+        # NEW: Mealtime insulin / carb consistency controls
+        st.markdown("### Mealtime insulin support (carb consistency)")
+
+        uses_mealtime_insulin = st.toggle(
+            "Uses mealtime insulin (bolus) - enforce consistent carbs per meal",
+            value=bool(st.session_state.get("uses_mealtime_insulin", False)),
+            help="Standardizes carbohydrate targets per meal to help predictability. It does NOT calculate insulin doses."
+        )
+        st.session_state["uses_mealtime_insulin"] = bool(uses_mealtime_insulin)
+
+        icr_options = ["1:15", "1:12", "1:10", "1:8", "1:5"]
+
+        if uses_mealtime_insulin:
+            insulin_to_carb_ratio = st.selectbox(
+                "Insulin-to-carb ratio (ICR) (for reference only)",
+                options=icr_options,
+                index=icr_options.index(st.session_state.get("insulin_to_carb_ratio", "1:10"))
+                if st.session_state.get("insulin_to_carb_ratio", "1:10") in icr_options else 2,
+                help="Shown so carbs per meal can be consistent. The plan does NOT compute insulin doses."
+            )
+            st.session_state["insulin_to_carb_ratio"] = insulin_to_carb_ratio
+
+            carb_distribution_style = st.selectbox(
+                "Carb distribution style",
+                options=[
+                    "Same carbs each main meal (snacks flexible)",
+                    "Same carbs breakfast/lunch/dinner and consistent snacks",
+                    "Custom split (advanced)"
+                ],
+                index=0
+                if st.session_state.get("carb_distribution_style") == "Same carbs each main meal (snacks flexible)"
+                else 1 if st.session_state.get("carb_distribution_style") == "Same carbs breakfast/lunch/dinner and consistent snacks"
+                else 2,
+                help="Controls how tightly carbs are held constant across meals."
+            )
+            st.session_state["carb_distribution_style"] = carb_distribution_style
+
+            st.info(
+                "Clinician-oriented note: This feature enforces consistent carbohydrates per meal. "
+                "It does NOT provide insulin dosing instructions and is NOT intended to guide insulin dosing. "
+                "ICR and dosing decisions are individualized and determined by the treating clinician."
+            )
 
     glp1_help = (
         "Check this if the patient is using a GLP-1 receptor agonist.\n\n"
@@ -2276,6 +2723,10 @@ def main():
                     include_dessert=include_dessert,
                     dessert_frequency=int(dessert_frequency or 0),
                     dessert_style=str(dessert_style),
+
+                    uses_mealtime_insulin=bool(uses_mealtime_insulin),
+                    insulin_to_carb_ratio=insulin_to_carb_ratio,
+                    carb_distribution_style=carb_distribution_style,
                 )
 
                 clean_text = normalize_text_for_parsing(plan_text_raw)
@@ -2283,6 +2734,38 @@ def main():
                 clean_text = add_recipe_spacing_and_dividers(clean_text, divider_len=48)
                 clean_text = format_end_sections(clean_text)
                 clean_text = sanitize_and_rebalance_macro_lines(clean_text)
+
+                # OPTIONAL UPGRADE: enforce carb-per-meal consistency (one corrective pass max)
+                if diet_pattern == "Diabetic" and bool(uses_mealtime_insulin):
+                    targets = compute_mealtime_carb_targets(
+                        daily_carbs_g=float(macros.carbs_g),
+                        big_meals_per_day=int(big_meals_per_day),
+                        snacks_per_day=int(snacks_per_day),
+                        style=str(carb_distribution_style or "Same carbs each main meal (snacks flexible)")
+                    )
+                    target_main = int(targets.get("Main meal target (each)", 0))
+                    target_snack = int(targets.get("Snack target (each)", 0))
+                    # For snacks_per_day==0, target_snack is irrelevant, but harmless
+                    clean_text = maybe_fix_carb_consistency_with_ai(
+                        original_prompt=original_prompt,
+                        plan_text=clean_text,
+                        language=language,
+                        enable_mealtime_insulin_mode=True,
+                        big_meals_per_day=int(big_meals_per_day),
+                        snacks_per_day=int(snacks_per_day),
+                        target_main=target_main,
+                        target_snack=target_snack,
+                        icr_str=insulin_to_carb_ratio,
+                        tol_main=5,
+                        tol_snack=5,
+                    )
+
+                    # Re-run sanitizers after carb-fix pass (safe)
+                    clean_text = normalize_text_for_parsing(clean_text)
+                    clean_text = add_section_spacing(clean_text)
+                    clean_text = add_recipe_spacing_and_dividers(clean_text, divider_len=48)
+                    clean_text = format_end_sections(clean_text)
+                    clean_text = sanitize_and_rebalance_macro_lines(clean_text)
 
                 # OPTIONAL: enforce dessert count (one corrective pass max)
                 clean_text = maybe_fix_dessert_count_with_ai(
@@ -2295,7 +2778,7 @@ def main():
                     snacks_per_day=snacks_per_day,
                 )
 
-                # Re-run sanitizers after fix pass (safe)
+                # Re-run sanitizers after dessert fix pass (safe)
                 clean_text = normalize_text_for_parsing(clean_text)
                 clean_text = add_section_spacing(clean_text)
                 clean_text = add_recipe_spacing_and_dividers(clean_text, divider_len=48)
