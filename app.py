@@ -570,6 +570,22 @@ class MacroResult:
 
 
 # ---------- BODY WEIGHT HELPERS ----------
+def ffm_from_bf(weight_kg: float, bodyfat_percent: float) -> float:
+    """
+    Converts body fat % to fat-free mass (lean mass).
+    FFM = weight * (1 - bodyfat%)
+    """
+    bf = max(0.0, min(80.0, float(bodyfat_percent))) / 100.0
+    return float(weight_kg) * (1.0 - bf)
+
+def rmr_katch_mcardle(ffm_kg: float) -> float:
+    """
+    Katch–McArdle RMR equation (FFM-based):
+    RMR = 370 + 21.6 * FFM(kg)
+    """
+    ffm_kg = max(0.0, float(ffm_kg))
+    return 370.0 + 21.6 * ffm_kg
+
 def bmi_from_kg_cm(weight_kg: float, height_cm: float) -> float:
     h_m = float(height_cm) / 100.0
     if h_m <= 0:
@@ -619,20 +635,49 @@ def calculate_macros(
 
     # weight gain only
     carbs_g_per_kg_gain: Optional[float] = None,
+    
+    rmr_method: Literal["Auto", "Mifflin", "Katch-McArdle"] = "Auto",
+    bodyfat_percent: Optional[float] = None,
+    lean_mass_kg: Optional[float] = None,
 ) -> MacroResult:
-    """Calculate RMR, TDEE, target calories and macros using Mifflin-St Jeor."""
 
-    bmi_val = bmi_from_kg_cm(weight_current_kg, height_cm)
-    weight_for_calories_kg = float(weight_current_kg)
-    if bmi_val >= 40.0:
-        ibw = ibw_kg_devine(sex, height_cm)
-        weight_for_calories_kg = adjusted_body_weight_kg(weight_current_kg, ibw, factor=0.25)
+    """
+    Calculate RMR, TDEE, target calories, and macros.
 
-    if sex.upper() == "M":
-        rmr = 10 * weight_for_calories_kg + 6.25 * height_cm - 5 * age + 5
-    else:
-        rmr = 10 * weight_for_calories_kg + 6.25 * height_cm - 5 * age - 161
+    RMR calculation:
+    - Auto (default): uses Katch–McArdle if lean mass or body fat % is provided,
+      otherwise falls back to Mifflin–St Jeor.
+    - Mifflin–St Jeor: weight/height/age/sex-based equation.
+    - Katch–McArdle: fat-free-mass–based equation (preferred for weight gain
+      and athletic populations when body composition is known).
+    """
 
+
+        # ---- Optional body comp override (FFM-based RMR) ----
+        ffm_kg = None
+        if lean_mass_kg is not None and float(lean_mass_kg) > 0:
+            ffm_kg = float(lean_mass_kg)
+        elif bodyfat_percent is not None and float(bodyfat_percent) > 0:
+            ffm_kg = ffm_from_bf(weight_current_kg, bodyfat_percent)
+
+        use_katch = (rmr_method == "Katch-McArdle") or (rmr_method == "Auto" and ffm_kg is not None)
+
+        if use_katch and ffm_kg is not None:
+            rmr = rmr_katch_mcardle(ffm_kg)
+        else:
+            # Fallback: your existing Mifflin-St Jeor (+ AdjBW for BMI >= 40)
+            bmi_val = bmi_from_kg_cm(weight_current_kg, height_cm)
+            weight_for_calories_kg = float(weight_current_kg)
+
+            if bmi_val >= 40.0:
+                ibw = ibw_kg_devine(sex, height_cm)
+                weight_for_calories_kg = adjusted_body_weight_kg(weight_current_kg, ibw, factor=0.25)
+
+            if sex.upper() == "M":
+                rmr = 10 * weight_for_calories_kg + 6.25 * height_cm - 5 * age + 5
+            else:
+                rmr = 10 * weight_for_calories_kg + 6.25 * height_cm - 5 * age - 161
+                
     tdee = rmr * activity_factor
 
     maintenance_kcal = tdee if (use_estimated_maintenance or maintenance_kcal_known is None) else float(maintenance_kcal_known)
@@ -2227,6 +2272,40 @@ def main():
             st.caption(f"Current weight: {weight_current_kg:.1f} kg\nGoal weight: {weight_goal_kg:.1f} kg")
 
         weight_source = st.selectbox("Weight used for macros", options=["Current", "Goal"])
+    
+    st.subheader("Optional: Body composition (for more accurate bulking TDEE)")
+
+    rmr_method = st.selectbox(
+        "RMR method",
+        options=["Auto", "Mifflin", "Katch-McArdle"],
+        index=0,
+        help="Auto uses Katch-McArdle if lean mass or body fat % is provided; otherwise Mifflin-St Jeor."
+    )
+
+    body_comp_mode = st.selectbox(
+        "Body comp input (optional)",
+        options=["None", "Body fat %", "Lean mass (FFM)"],
+        index=0,
+    )
+
+    bodyfat_percent = None
+    lean_mass_kg = None
+
+    if body_comp_mode == "Body fat %":
+        bodyfat_percent = st.number_input(
+            "Body fat %",
+            min_value=3.0,
+            max_value=60.0,
+            value=20.0,
+            step=0.5
+        )
+        st.caption("Used to estimate fat-free mass and apply Katch-McArdle if selected/Auto.")
+
+    elif body_comp_mode == "Lean mass (FFM)":
+        lm_unit = st.radio("Lean mass units", options=["kg", "lb"], index=0, horizontal=True)
+        lm_val = st.number_input("Lean mass", min_value=20.0, max_value=250.0, value=55.0, step=1.0)
+        lean_mass_kg = lm_val if lm_unit == "kg" else lm_val / 2.20462
+        st.caption(f"Lean mass used: {lean_mass_kg:.1f} kg")
 
     # 2) Activity & Maintenance Settings
     st.subheader("2. Activity & Maintenance Settings")
@@ -2747,6 +2826,9 @@ def main():
             fat_g_per_kg_manual=float(fat_g_per_kg_manual),
 
             carbs_g_per_kg_gain=carbs_g_per_kg_gain,
+            rmr_method=rmr_method,
+            bodyfat_percent=bodyfat_percent,
+            lean_mass_kg=lean_mass_kg,
         )
 
         st.success("Calculated macros successfully.")
@@ -2891,5 +2973,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
