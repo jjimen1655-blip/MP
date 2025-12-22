@@ -653,30 +653,30 @@ def calculate_macros(
     """
 
 
-        # ---- Optional body comp override (FFM-based RMR) ----
-        ffm_kg = None
-        if lean_mass_kg is not None and float(lean_mass_kg) > 0:
-            ffm_kg = float(lean_mass_kg)
-        elif bodyfat_percent is not None and float(bodyfat_percent) > 0:
-            ffm_kg = ffm_from_bf(weight_current_kg, bodyfat_percent)
+    # ---- Optional body comp override (FFM-based RMR) ----
+    ffm_kg = None
+    if lean_mass_kg is not None and float(lean_mass_kg) > 0:
+        ffm_kg = float(lean_mass_kg)
+    elif bodyfat_percent is not None and float(bodyfat_percent) > 0:
+        ffm_kg = ffm_from_bf(weight_current_kg, bodyfat_percent)
 
-        use_katch = (rmr_method == "Katch-McArdle") or (rmr_method == "Auto" and ffm_kg is not None)
+    use_katch = (rmr_method == "Katch-McArdle") or (rmr_method == "Auto" and ffm_kg is not None)
 
-        if use_katch and ffm_kg is not None:
-            rmr = rmr_katch_mcardle(ffm_kg)
+    if use_katch and ffm_kg is not None:
+        rmr = rmr_katch_mcardle(ffm_kg)
+    else:
+        # Fallback: your existing Mifflin-St Jeor (+ AdjBW for BMI >= 40)
+        bmi_val = bmi_from_kg_cm(weight_current_kg, height_cm)
+        weight_for_calories_kg = float(weight_current_kg)
+
+        if bmi_val >= 40.0:
+            ibw = ibw_kg_devine(sex, height_cm)
+            weight_for_calories_kg = adjusted_body_weight_kg(weight_current_kg, ibw, factor=0.25)
+
+        if sex.upper() == "M":
+            rmr = 10 * weight_for_calories_kg + 6.25 * height_cm - 5 * age + 5
         else:
-            # Fallback: your existing Mifflin-St Jeor (+ AdjBW for BMI >= 40)
-            bmi_val = bmi_from_kg_cm(weight_current_kg, height_cm)
-            weight_for_calories_kg = float(weight_current_kg)
-
-            if bmi_val >= 40.0:
-                ibw = ibw_kg_devine(sex, height_cm)
-                weight_for_calories_kg = adjusted_body_weight_kg(weight_current_kg, ibw, factor=0.25)
-
-            if sex.upper() == "M":
-                rmr = 10 * weight_for_calories_kg + 6.25 * height_cm - 5 * age + 5
-            else:
-                rmr = 10 * weight_for_calories_kg + 6.25 * height_cm - 5 * age - 161
+            rmr = 10 * weight_for_calories_kg + 6.25 * height_cm - 5 * age - 161
                 
     tdee = rmr * activity_factor
 
@@ -2973,6 +2973,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
