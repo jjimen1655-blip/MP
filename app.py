@@ -156,7 +156,174 @@ def insulin_resistance_reference():
             "Recommended cap (g/kg/day)": "1.0",
         },
     ])
+# ---------- ONE-RESTAURANT-PER-DAY ENFORCEMENT ----------
+_DAY_PREFIXES = ("Day ", "Día ", "Dia ")
 
+def _extract_day_blocks(plan_text: str) -> List[Dict[str, str]]:
+    """
+    Splits plan into day blocks:
+      [{"day_title":"Day 1", "body":"- ...\n  Approx: ...\n..."}]
+    """
+    lines = plan_text.splitlines()
+    blocks: List[Dict[str, str]] = []
+    current_day = None
+    current_body: List[str] = []
+
+    for line in lines:
+        s = line.strip()
+        if any(s.startswith(p) for p in _DAY_PREFIXES):
+            if current_day is not None:
+                blocks.append({"day_title": current_day, "body": "\n".join(current_body).rstrip()})
+            current_day = s
+            current_body = []
+        else:
+            if current_day is not None:
+                current_body.append(line)
+
+    if current_day is not None:
+        blocks.append({"day_title": current_day, "body": "\n".join(current_body).rstrip()})
+
+    return blocks
+
+
+def _extract_restaurants_used_in_day(day_body: str, allowed_chains: List[str]) -> Set[str]:
+    """
+    Detect restaurant usage using word-boundary matching to avoid false positives.
+    """
+    used = set()
+    if not day_body or not allowed_chains:
+        return used
+
+    body_lower = day_body.lower()
+    for chain in allowed_chains:
+        if not chain:
+            continue
+        pattern = r"\b" + re.escape(chain.lower()) + r"\b"
+        if re.search(pattern, body_lower):
+            used.add(chain)
+    return used
+
+def _days_violating_one_restaurant(plan_text: str, allowed_chains: List[str]) -> List[str]:
+    """
+    Returns list of day titles that violate rule (>1 chain used).
+    """
+    violators = []
+    for blk in _extract_day_blocks(plan_text):
+        used = _extract_restaurants_used_in_day(blk["body"], allowed_chains)
+        if len(used) > 1:
+            violators.append(blk["day_title"])
+    return violators
+
+
+def build_one_restaurant_fix_prompt(
+    original_prompt: str,
+    current_plan_text: str,
+    language: str,
+    big_meals_per_day: int,
+    snacks_per_day: int,
+    allowed_chains: List[str],
+) -> str:
+    chains_txt = ", ".join(allowed_chains) if allowed_chains else "none"
+
+    if language == "Spanish":
+        lang_rule = (
+            "REQUISITO DE IDIOMA: TODO debe estar en español (salvo marcas/medicamentos). "
+            "Usa SOLO guiones ASCII '-' para viñetas y rangos."
+        )
+        rule = f"""
+REGLA OBLIGATORIA: UN SOLO RESTAURANTE POR DÍA
+- Si un día incluye CUALQUIER comida/snack de restaurante/fast-food, TODOS los ítems de restaurante ese día deben ser del MISMO restaurante.
+- NO está permitido usar Restaurante A para una comida y Restaurante B para un snack el mismo día.
+- Si necesitas un snack en un “día de restaurante”, debe ser:
+  (a) un ítem REAL del MISMO restaurante, o
+  (b) un snack NO-restaurante (sin nombre de restaurante).
+- Restaurantes permitidos: {chains_txt}
+"""
+    else:
+        lang_rule = (
+            "LANGUAGE REQUIREMENT: Respond entirely in English. Use ONLY ASCII '-' for bullets and numeric ranges."
+        )
+        rule = f"""
+MANDATORY RULE: ONE RESTAURANT PER DAY
+- If a day includes ANY restaurant/fast-food items, then ALL restaurant items that day must be from ONE single chain only.
+- It is NOT allowed to use Restaurant A for a meal and Restaurant B for a snack on the same day.
+- If a snack is needed on a restaurant day, it must be:
+  (a) a real item from the SAME chain, or
+  (b) a non-restaurant snack (no restaurant name).
+- Allowed chains: {chains_txt}
+"""
+
+    return f"""
+{lang_rule}
+
+You previously generated a 14-day meal plan. Some days violate the rule of ONE restaurant per day.
+
+Your task:
+1) Output the FULL corrected plan.
+2) Keep ALL strict formatting rules from the original prompt.
+3) Do NOT add commentary or extra text.
+4) Only modify Day blocks as needed to enforce the ONE-RESTAURANT-PER-DAY RULE.
+5) Each day must still have exactly {big_meals_per_day} main meals and {snacks_per_day} snacks (total {big_meals_per_day + snacks_per_day} items).
+{rule}
+
+Here is the original prompt you must follow:
+--------------------
+{original_prompt}
+--------------------
+
+Here is the current plan you must correct:
+--------------------
+{current_plan_text}
+--------------------
+""".strip()
+
+
+def maybe_fix_one_restaurant_per_day_with_ai(
+    original_prompt: str,
+    plan_text: str,
+    language: str,
+    one_restaurant_per_day: bool,
+    big_meals_per_day: int,
+    snacks_per_day: int,
+    allowed_chains: List[str],
+) -> str:
+    """
+    If enabled, does one corrective AI pass ONLY if violations are detected.
+    """
+    if not one_restaurant_per_day:
+        return plan_text
+    if not allowed_chains:
+        return plan_text
+
+    violators = _days_violating_one_restaurant(plan_text, allowed_chains)
+    if not violators:
+        return plan_text
+
+    fix_prompt = build_one_restaurant_fix_prompt(
+        original_prompt=original_prompt,
+        current_plan_text=plan_text,
+        language=language,
+        big_meals_per_day=big_meals_per_day,
+        snacks_per_day=snacks_per_day,
+        allowed_chains=allowed_chains,
+    )
+
+    completion = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a strict formatter. Output plain text only. "
+                    "Preserve required structure exactly."
+                ),
+            },
+            {"role": "user", "content": fix_prompt},
+        ],
+    )
+
+    fixed = completion.choices[0].message.content or ""
+    return normalize_text_for_parsing(fixed)
 
 # ---------- TEXT NORMALIZATION ----------
 def normalize_text_for_parsing(text: str) -> str:
@@ -999,7 +1166,6 @@ def maybe_fix_dessert_count_with_ai(
 
 
 # ---------- OPTIONAL UPGRADE: CARB CONSISTENCY ENFORCEMENT (MEALTIME INSULIN MODE) ----------
-_DAY_PREFIXES = ("Day ", "Día ", "Dia ")
 _MACROS_PREFIXES = ("Approx:", "Aproximado:", "Aprox:")
 _CARBS_IN_MACROS_RE = re.compile(r"\bC:\s*(?P<c>-?\d+(?:\.\d+)?)\s*g\b", flags=re.IGNORECASE)
 
@@ -1299,6 +1465,8 @@ def build_mealplan_prompt(
     uses_mealtime_insulin: bool,
     insulin_to_carb_ratio: Optional[str],
     carb_distribution_style: Optional[str],
+    # One restaurant rule 
+    one_restaurant_per_day: bool,
 ):
     if language == "Spanish":
         lang_note = (
@@ -1553,10 +1721,21 @@ MEALTIME INSULIN (BOLUS) SUPPORT - CARB CONSISTENCY:
 - STRICT RULE: Keep carbs for each main meal within that range. Do not “shift” carbs between meals to compensate.
 """.strip()
 
-    fast_food_note = ""
-    if fast_food_chains and fast_food_percent > 0:
-        chains_txt = ", ".join(fast_food_chains)
-        fast_food_note = f"""
+fast_food_note = ""
+if fast_food_chains and fast_food_percent > 0:
+    chains_txt = ", ".join(fast_food_chains)
+
+    one_chain_rule = ""
+    if one_restaurant_per_day:
+        one_chain_rule = """
+ONE-RESTAURANT-PER-DAY RULE (MANDATORY):
+- If a given day includes ANY restaurant/fast-food items, then ALL restaurant items that day must be from ONE single chain only.
+- It is NOT allowed to use Restaurant A for a meal and Restaurant B for a snack on the same day.
+- If a snack is needed on a restaurant day, it must be a real item from the SAME restaurant chain used that day,
+  OR it must be a non-restaurant snack (grocery/home item) with no restaurant name.
+""".strip()
+
+    fast_food_note = f"""
 FAST-FOOD / TAKEOUT PATTERN (REAL MENU ITEMS ONLY):
 - Patient is okay with using some meals from these fast-food chains: {chains_txt}.
 - Aim for roughly {fast_food_percent}% of total weekly meals to be from fast-food or takeout.
@@ -1564,9 +1743,10 @@ FAST-FOOD / TAKEOUT PATTERN (REAL MENU ITEMS ONLY):
 - Prefer core, long-running menu items rather than limited-time specials to reduce error.
 - For each fast-food meal, specify the restaurant and exact item name.
 - For each item, provide approximate calories, protein, carbohydrates, fat, and sodium.
-"""
+{one_chain_rule}
+""".strip()
 
-    meal_timing_note = f"""
+meal_timing_note = f"""
 MEAL TIMING PREFERENCES:
 - Target {big_meals_per_day} main meal(s) and {snacks_per_day} snack time(s) per day.
 - Main meals should contain the majority of daily calories and protein.
@@ -1811,6 +1991,7 @@ def generate_meal_plan_with_ai(
     dessert_style: str,
 
     # NEW
+    one_restaurant_per_day: bool,
     uses_mealtime_insulin: bool,
     insulin_to_carb_ratio: Optional[str],
     carb_distribution_style: Optional[str],
@@ -1837,11 +2018,11 @@ def generate_meal_plan_with_ai(
         meal_prep_style=meal_prep_style,
         avg_prep_minutes=int(avg_prep_minutes),
         cooking_skill=str(cooking_skill),
-
+        one_restaurant_per_day=bool(one_restaurant_per_day),
         include_dessert=include_dessert,
         dessert_frequency=int(dessert_frequency or 0),
         dessert_style=str(dessert_style),
-
+    
         uses_mealtime_insulin=bool(uses_mealtime_insulin),
         insulin_to_carb_ratio=insulin_to_carb_ratio,
         carb_distribution_style=carb_distribution_style,
@@ -2736,6 +2917,7 @@ def main():
         )
 
     fast_food_percent = 0
+    one_restaurant_per_day = False
     if include_fast_food:
         fast_food_percent = st.slider(
             "About what % of weekly meals can be fast-food / takeout?",
@@ -2744,6 +2926,12 @@ def main():
             step=10,
             value=20,
             help="This is a rough target; the plan will approximate this share of meals."
+        )
+        
+        one_restaurant_per_day = st.checkbox(
+            "When fast-food is used, restrict to ONE restaurant per day",
+            value=True,
+            help="If a day includes restaurant items, all restaurant items that day must be from the same chain."
         )
 
     # 7) Meal timing
@@ -2876,7 +3064,7 @@ def main():
                     include_dessert=include_dessert,
                     dessert_frequency=int(dessert_frequency or 0),
                     dessert_style=str(dessert_style),
-
+                    one_restaurant_per_day=one_restaurant_per_day,
                     uses_mealtime_insulin=bool(uses_mealtime_insulin),
                     insulin_to_carb_ratio=insulin_to_carb_ratio,
                     carb_distribution_style=carb_distribution_style,
@@ -2944,7 +3132,26 @@ def main():
                 clean_text = sanitize_and_rebalance_macro_lines(clean_text)
                 if language == "Spanish":
                     clean_text = enforce_spanish_meal_labels(clean_text)
-
+                    
+                # OPTIONAL: enforce ONE-RESTAURANT-PER-DAY (one corrective pass max)
+                clean_text = maybe_fix_one_restaurant_per_day_with_ai(
+                    original_prompt=original_prompt,
+                    plan_text=clean_text,
+                    language=language,
+                    one_restaurant_per_day=one_restaurant_per_day,
+                    big_meals_per_day=big_meals_per_day,
+                    snacks_per_day=snacks_per_day,
+                    allowed_chains=fast_food_chains,
+                )
+                
+                # Re-run sanitizers after restaurant fix pass (safe)
+                clean_text = normalize_text_for_parsing(clean_text)
+                clean_text = add_section_spacing(clean_text)
+                clean_text = add_recipe_spacing_and_dividers(clean_text, divider_len=48)
+                clean_text = format_end_sections(clean_text)
+                clean_text = sanitize_and_rebalance_macro_lines(clean_text)
+                if language == "Spanish":
+                    clean_text = enforce_spanish_meal_labels(clean_text)
 
                 st.session_state["plan_text"] = clean_text
                 st.session_state["plan_language"] = language
@@ -2973,6 +3180,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
