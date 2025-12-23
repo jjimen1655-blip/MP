@@ -5,9 +5,6 @@ from typing import Dict, List, Literal, Optional, Set, Tuple
 
 import streamlit as st
 from openai import OpenAI
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
-from reportlab.pdfbase import pdfmetrics
 
 MODEL_NAME = "gpt-5-mini"
 
@@ -57,6 +54,8 @@ def activity_factor_reference_table():
                 "Construction workers, competitive athletes",
         },
     ])
+
+
 def enforce_spanish_meal_labels(text: str) -> str:
     """
     Forces Spanish meal labels inside Day blocks if the model leaks English.
@@ -93,7 +92,7 @@ def enforce_spanish_meal_labels(text: str) -> str:
 
         return label.strip()
 
-    out = []
+    out: List[str] = []
     for raw in text.splitlines():
         line = raw.rstrip("\n")
         stripped = line.strip()
@@ -156,8 +155,11 @@ def insulin_resistance_reference():
             "Recommended cap (g/kg/day)": "1.0",
         },
     ])
+
+
 # ---------- ONE-RESTAURANT-PER-DAY ENFORCEMENT ----------
 _DAY_PREFIXES = ("Day ", "Día ", "Dia ")
+
 
 def _extract_day_blocks(plan_text: str) -> List[Dict[str, str]]:
     """
@@ -166,7 +168,7 @@ def _extract_day_blocks(plan_text: str) -> List[Dict[str, str]]:
     """
     lines = plan_text.splitlines()
     blocks: List[Dict[str, str]] = []
-    current_day = None
+    current_day: Optional[str] = None
     current_body: List[str] = []
 
     for line in lines:
@@ -186,35 +188,43 @@ def _extract_day_blocks(plan_text: str) -> List[Dict[str, str]]:
     return blocks
 
 
+def _chain_regex(chain: str) -> re.Pattern:
+    """
+    Build a robust "whole-phrase" matcher that works for punctuation-heavy names
+    like "McDonald's" or "Rally's / Checkers" where \\b word-boundaries fail.
+    """
+    escaped = re.escape(chain.strip().lower())
+    return re.compile(rf"(?<![a-z0-9]){escaped}(?![a-z0-9])", flags=re.IGNORECASE)
+
+
 def _extract_restaurants_used_in_day(day_body: str, allowed_chains: List[str]) -> Set[str]:
     """
-    Detect restaurant usage using word-boundary matching to avoid false positives.
+    Detect restaurant usage using robust boundary matching to avoid false positives,
+    including punctuation-heavy chain names.
     """
-    used = set()
+    used: Set[str] = set()
     if not day_body or not allowed_chains:
         return used
 
     body_lower = day_body.lower()
     for chain in allowed_chains:
-        if not chain:
+        if not chain or not chain.strip():
             continue
-        pattern = r"\b" + re.escape(chain.lower()) + r"\b"
-        if re.search(pattern, body_lower):
+        if _chain_regex(chain).search(body_lower):
             used.add(chain)
     return used
+
 
 def _days_violating_one_restaurant(plan_text: str, allowed_chains: List[str]) -> List[str]:
     """
     Returns list of day titles that violate rule (>1 chain used).
     """
-    violators = []
+    violators: List[str] = []
     for blk in _extract_day_blocks(plan_text):
         used = _extract_restaurants_used_in_day(blk["body"], allowed_chains)
         if len(used) > 1:
             violators.append(blk["day_title"])
     return violators
-
-
 def build_one_restaurant_fix_prompt(
     original_prompt: str,
     current_plan_text: str,
@@ -278,6 +288,61 @@ Here is the current plan you must correct:
 """.strip()
 
 
+# ---------- TEXT NORMALIZATION ----------
+def normalize_text_for_parsing(text: str) -> str:
+    """
+    Normalize common Unicode characters that frequently break parsing/PDF rendering:
+    - Dash variants (– — − etc.) -> "-"
+    - Curly quotes -> straight quotes
+    - NBSP -> space
+    - Ellipsis -> "..."
+    - Bullet chars -> "-"
+    """
+    if not text:
+        return ""
+
+    replacements = {
+        # Dashes / hyphens / minus
+        "\u2010": "-",  # hyphen
+        "\u2011": "-",  # non-breaking hyphen
+        "\u2012": "-",  # figure dash
+        "\u2013": "-",  # en dash
+        "\u2014": "-",  # em dash
+        "\u2212": "-",  # minus sign
+        "\u00AD": "-",  # soft hyphen
+
+        # Quotes
+        "\u2018": "'",  # left single quote
+        "\u2019": "'",  # right single quote
+        "\u201C": '"',  # left double quote
+        "\u201D": '"',  # right double quote
+
+        # Spaces / punctuation
+        "\u00A0": " ",   # non-breaking space
+        "\u2026": "...", # ellipsis
+
+        # Bullets
+        "\u2022": "-",  # bullet
+        "\u25CF": "-",  # black circle
+        "\u25E6": "-",  # white bullet
+        "\u2043": "-",  # hyphen bullet
+    }
+
+    for bad, good in replacements.items():
+        text = text.replace(bad, good)
+
+    # Normalize line starts that look like bullets but aren't "- "
+    fixed_lines: List[str] = []
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith(("-", "*")) and not stripped.startswith("- "):
+            stripped = stripped[1:].lstrip()
+            fixed_lines.append("- " + stripped)
+        else:
+            fixed_lines.append(line)
+    return "\n".join(fixed_lines)
+
+
 def maybe_fix_one_restaurant_per_day_with_ai(
     original_prompt: str,
     plan_text: str,
@@ -286,6 +351,7 @@ def maybe_fix_one_restaurant_per_day_with_ai(
     big_meals_per_day: int,
     snacks_per_day: int,
     allowed_chains: List[str],
+    client: OpenAI,
 ) -> str:
     """
     If enabled, does one corrective AI pass ONLY if violations are detected.
@@ -325,57 +391,6 @@ def maybe_fix_one_restaurant_per_day_with_ai(
     fixed = completion.choices[0].message.content or ""
     return normalize_text_for_parsing(fixed)
 
-# ---------- TEXT NORMALIZATION ----------
-def normalize_text_for_parsing(text: str) -> str:
-    """
-    Normalize common Unicode characters that frequently break parsing/PDF rendering:
-    - Dash variants (– — − etc.) -> "-"
-    - Curly quotes -> straight quotes
-    - NBSP -> space
-    - Ellipsis -> "..."
-    - Bullet chars -> "-"
-    """
-    replacements = {
-        # Dashes / hyphens / minus
-        "\u2010": "-",  # hyphen
-        "\u2011": "-",  # non-breaking hyphen
-        "\u2012": "-",  # figure dash
-        "\u2013": "-",  # en dash
-        "\u2014": "-",  # em dash
-        "\u2212": "-",  # minus sign
-        "\u00AD": "-",  # soft hyphen
-
-        # Quotes
-        "\u2018": "'",  # left single quote
-        "\u2019": "'",  # right single quote
-        "\u201C": '"',  # left double quote
-        "\u201D": '"',  # right double quote
-
-        # Spaces / punctuation
-        "\u00A0": " ",   # non-breaking space
-        "\u2026": "...", # ellipsis
-
-        # Bullets
-        "\u2022": "-",  # bullet
-        "\u25CF": "-",  # black circle
-        "\u25E6": "-",  # white bullet
-        "\u2043": "-",  # hyphen bullet
-    }
-
-    for bad, good in replacements.items():
-        text = text.replace(bad, good)
-
-    # Normalize line starts that look like bullets but aren't "- "
-    fixed_lines = []
-    for line in text.splitlines():
-        stripped = line.lstrip()
-        if stripped.startswith(("-", "*")) and not stripped.startswith("- "):
-            stripped = stripped[1:].lstrip()
-            fixed_lines.append("- " + stripped)
-        else:
-            fixed_lines.append(line)
-    return "\n".join(fixed_lines)
-
 
 # ---------- MEALPLAN MACRO SANITIZATION (FIX) ----------
 _MACROS_LINE_RE = re.compile(
@@ -388,11 +403,13 @@ _MACROS_LINE_RE = re.compile(
     flags=re.IGNORECASE
 )
 
+
 def _safe_float(x: str, default: float = 0.0) -> float:
     try:
         return float(x)
     except Exception:
         return default
+
 
 def sanitize_and_rebalance_macro_lines(text: str) -> str:
     """
@@ -406,7 +423,10 @@ def sanitize_and_rebalance_macro_lines(text: str) -> str:
       Then recompute kcal := 4P + 4C + 9F to keep internal consistency.
     - Only modifies lines that match the strict "Approx/Aprox/Aproximado" pattern.
     """
-    out_lines = []
+    if not text:
+        return ""
+
+    out_lines: List[str] = []
     for raw in text.splitlines():
         line = raw.rstrip("\n")
         m = _MACROS_LINE_RE.match(line.strip())
@@ -433,7 +453,9 @@ def sanitize_and_rebalance_macro_lines(text: str) -> str:
         # Recompute kcal from rounded macros so the line is consistent
         kcal_i = int(round((4 * p_i) + (4 * c_i) + (9 * fat_i)))
 
-        out_lines.append(f"{prefix} {kcal_i} kcal, P: {p_i} g, C: {c_i} g, F: {fat_i} g, Na: {na_i} mg")
+        out_lines.append(
+            f"{prefix} {kcal_i} kcal, P: {p_i} g, C: {c_i} g, F: {fat_i} g, Na: {na_i} mg"
+        )
 
     return "\n".join(out_lines)
 
@@ -443,6 +465,9 @@ def add_section_spacing(text: str) -> str:
     Adds blank lines between major sections WITHOUT inserting blank lines inside Day blocks.
     Also removes stray "Meal Plan (English/Spanish)" headers if the model inserts them.
     """
+    if not text:
+        return ""
+
     lines = text.splitlines()
 
     major_headers: Set[str] = {
@@ -487,7 +512,7 @@ def add_section_spacing(text: str) -> str:
         "Plan de comidas",
     }
 
-    out = []
+    out: List[str] = []
     in_day_block = False
     day_prefixes = ("Day ", "Día ", "Dia ")
 
@@ -530,6 +555,9 @@ def add_recipe_spacing_and_dividers(text: str, divider_len: int = 48) -> str:
     - Divider is ASCII hyphens only, safe for PDF parsing.
     - Guarantees EXACTLY one blank line before and after the divider.
     """
+    if not text:
+        return ""
+
     lines = text.splitlines()
 
     recipe_section_headers = {
@@ -539,11 +567,11 @@ def add_recipe_spacing_and_dividers(text: str, divider_len: int = 48) -> str:
 
     in_recipe_section = False
     saw_first_recipe = False
-    out = []
+    out: List[str] = []
 
     divider = "-" * max(10, int(divider_len))
 
-    def trim_trailing_blank_lines(buf):
+    def trim_trailing_blank_lines(buf: List[str]):
         while buf and buf[-1].strip() == "":
             buf.pop()
 
@@ -586,7 +614,6 @@ def add_recipe_spacing_and_dividers(text: str, divider_len: int = 48) -> str:
     result = "\n".join(out)
     result = re.sub(r"\n{3,}", "\n\n", result).strip()
     return result
-
 def format_end_sections(text: str) -> str:
     """
     Cleans up the post-Day-14 summary area so:
@@ -595,10 +622,12 @@ def format_end_sections(text: str) -> str:
     - Cost summary header is on its own line with spacing
     Works for both English and Spanish variants.
     """
+    if not text:
+        return ""
+
     lines = text.splitlines()
-    out = []
+    out: List[str] = []
     in_supplements = False
-    supplements_header = None
 
     section_starters = {
         "Cost summary (rough estimates only)",
@@ -620,10 +649,7 @@ def format_end_sections(text: str) -> str:
         out.append(header)
         items = [x.strip() for x in supp_str.split(",") if x.strip()]
         for it in items:
-            if it.startswith("- "):
-                out.append(it)
-            else:
-                out.append(f"- {it}")
+            out.append(it if it.startswith("- ") else f"- {it}")
 
     for raw in lines:
         line = raw.rstrip("\n")
@@ -631,9 +657,9 @@ def format_end_sections(text: str) -> str:
 
         if in_supplements and s in section_starters:
             in_supplements = False
-            supplements_header = None
 
         if s.startswith("Daily macro target (primary individual):"):
+            # Back-compat if model emits older line
             if "; Daily supplements" in s:
                 left, right = s.split("; Daily supplements", 1)
                 out.append(left.strip())
@@ -643,14 +669,12 @@ def format_end_sections(text: str) -> str:
                 else:
                     supp_str = supp_str.strip()
 
-                supplements_header = "Daily supplements:"
-                _emit_supplements_block(supp_str, supplements_header)
+                _emit_supplements_block(supp_str, "Daily supplements:")
                 in_supplements = True
                 continue
 
             out.append(line)
             in_supplements = False
-            supplements_header = None
             continue
 
         if s.lower().startswith("daily targets summary:"):
@@ -661,8 +685,7 @@ def format_end_sections(text: str) -> str:
                 supp_part = s[idx + len("daily supplements:"):].strip()
 
                 out.append(targets_part.strip() + ".")
-                supplements_header = "Daily supplements:"
-                _emit_supplements_block(supp_part, supplements_header)
+                _emit_supplements_block(supp_part, "Daily supplements:")
                 in_supplements = True
                 continue
 
@@ -677,8 +700,7 @@ def format_end_sections(text: str) -> str:
                 supp_part = s[idx + len("suplementos diarios:"):].strip()
 
                 out.append(targets_part.strip() + ".")
-                supplements_header = "Suplementos diarios:"
-                _emit_supplements_block(supp_part, supplements_header)
+                _emit_supplements_block(supp_part, "Suplementos diarios:")
                 in_supplements = True
                 continue
 
@@ -688,7 +710,6 @@ def format_end_sections(text: str) -> str:
         if s in ("Daily supplements:", "Suplementos diarios:"):
             out.append(s)
             in_supplements = True
-            supplements_header = s
             continue
 
         if s in ("Cost summary (rough estimates only)", "Cost summary (estimates only)"):
@@ -705,16 +726,18 @@ def format_end_sections(text: str) -> str:
 
 
 # ---------- OPENAI CLIENT SETUP ----------
-api_key = None
-try:
-    api_key = st.secrets["OPENAI_API_KEY"]
-except Exception:
-    api_key = os.getenv("OPENAI_API_KEY")
+def get_openai_client() -> OpenAI:
+    api_key = None
+    try:
+        api_key = st.secrets["OPENAI_API_KEY"]
+    except Exception:
+        api_key = os.getenv("OPENAI_API_KEY")
 
-if not api_key:
-    raise RuntimeError("OPENAI_API_KEY not found in Streamlit secrets or environment variables")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY not found in Streamlit secrets or environment variables")
 
-client = OpenAI(api_key=api_key)
+    return OpenAI(api_key=api_key)
+
 
 # ---------- DATA STRUCTURES ----------
 Intensity = Literal["Gentle", "Moderate", "Aggressive"]
@@ -745,6 +768,7 @@ def ffm_from_bf(weight_kg: float, bodyfat_percent: float) -> float:
     bf = max(0.0, min(80.0, float(bodyfat_percent))) / 100.0
     return float(weight_kg) * (1.0 - bf)
 
+
 def rmr_katch_mcardle(ffm_kg: float) -> float:
     """
     Katch–McArdle RMR equation (FFM-based):
@@ -753,11 +777,13 @@ def rmr_katch_mcardle(ffm_kg: float) -> float:
     ffm_kg = max(0.0, float(ffm_kg))
     return 370.0 + 21.6 * ffm_kg
 
+
 def bmi_from_kg_cm(weight_kg: float, height_cm: float) -> float:
     h_m = float(height_cm) / 100.0
     if h_m <= 0:
         return 0.0
     return float(weight_kg) / (h_m ** 2)
+
 
 def ibw_kg_devine(sex: str, height_cm: float) -> float:
     """
@@ -768,6 +794,7 @@ def ibw_kg_devine(sex: str, height_cm: float) -> float:
     inches = float(height_cm) / 2.54
     base = 50.0 if sex.upper() == "M" else 45.5
     return base + 2.3 * max(0.0, inches - 60.0)
+
 
 def adjusted_body_weight_kg(actual_kg: float, ibw_kg: float, factor: float = 0.25) -> float:
     """
@@ -791,23 +818,16 @@ def calculate_macros(
     use_estimated_maintenance: bool = True,
     maintenance_kcal_known: Optional[float] = None,
     surplus_kcal: float = 300.0,
-
     protein_g_per_kg: float = 1.4,
-
-    # Priority mode (carb-first)
     carbs_g_per_kg_cap: Optional[float] = None,
     carb_cap_basis: Literal["Current", "Macro weight"] = "Current",
     fat_mode: FatMode = "Manual",
     fat_g_per_kg_manual: float = 0.7,
-
-    # weight gain only
     carbs_g_per_kg_gain: Optional[float] = None,
-    
     rmr_method: Literal["Auto", "Mifflin", "Katch-McArdle"] = "Auto",
     bodyfat_percent: Optional[float] = None,
     lean_mass_kg: Optional[float] = None,
 ) -> MacroResult:
-
     """
     Calculate RMR, TDEE, target calories, and macros.
 
@@ -818,7 +838,6 @@ def calculate_macros(
     - Katch–McArdle: fat-free-mass–based equation (preferred for weight gain
       and athletic populations when body composition is known).
     """
-
 
     # ---- Optional body comp override (FFM-based RMR) ----
     ffm_kg = None
@@ -832,7 +851,7 @@ def calculate_macros(
     if use_katch and ffm_kg is not None:
         rmr = rmr_katch_mcardle(ffm_kg)
     else:
-        # Fallback: your existing Mifflin-St Jeor (+ AdjBW for BMI >= 40)
+        # Mifflin-St Jeor (+ AdjBW for BMI >= 40)
         bmi_val = bmi_from_kg_cm(weight_current_kg, height_cm)
         weight_for_calories_kg = float(weight_current_kg)
 
@@ -844,10 +863,13 @@ def calculate_macros(
             rmr = 10 * weight_for_calories_kg + 6.25 * height_cm - 5 * age + 5
         else:
             rmr = 10 * weight_for_calories_kg + 6.25 * height_cm - 5 * age - 161
-                
-    tdee = rmr * activity_factor
 
-    maintenance_kcal = tdee if (use_estimated_maintenance or maintenance_kcal_known is None) else float(maintenance_kcal_known)
+    tdee = rmr * float(activity_factor)
+
+    maintenance_kcal = (
+        tdee if (use_estimated_maintenance or maintenance_kcal_known is None)
+        else float(maintenance_kcal_known)
+    )
 
     MIN_KCAL = 1200.0
     MAX_KCAL_LOSS_M = 2400.0
@@ -869,7 +891,7 @@ def calculate_macros(
 
     PROTEIN_CAP_G = 220.0
 
-    protein_g = weight_for_macros * float(protein_g_per_kg)
+    protein_g = float(weight_for_macros) * float(protein_g_per_kg)
     protein_g = min(protein_g, PROTEIN_CAP_G)
     kcal_protein = protein_g * 4
 
@@ -878,19 +900,20 @@ def calculate_macros(
     carbs_g = 0.0
     fat_g = 0.0
 
+    # Priority mode (carb cap + auto fat remainder)
     if carbs_g_per_kg_cap is not None and fat_mode == "Auto":
         carb_cap_g = float(carbs_g_per_kg_cap) * float(carb_cap_weight_kg)
 
         if goal_mode == "Weight gain" and carbs_g_per_kg_gain is not None:
-            desired_carbs_g = weight_for_macros * float(carbs_g_per_kg_gain)
+            desired_carbs_g = float(weight_for_macros) * float(carbs_g_per_kg_gain)
             carbs_g = min(desired_carbs_g, carb_cap_g)
         else:
             carbs_g = carb_cap_g
 
         kcal_carbs = carbs_g * 4
 
-        fat_min_g = 0.3 * weight_for_macros
-        fat_max_g = (1.2 * weight_for_macros) if goal_mode == "Weight gain" else (1.5 * weight_for_macros)
+        fat_min_g = 0.3 * float(weight_for_macros)
+        fat_max_g = (1.2 * float(weight_for_macros)) if goal_mode == "Weight gain" else (1.5 * float(weight_for_macros))
 
         min_fat_kcal = fat_min_g * 9
         if (kcal_protein + kcal_carbs + min_fat_kcal) > target_kcal:
@@ -908,15 +931,16 @@ def calculate_macros(
         kcal_carbs = carbs_g * 4
 
     else:
+        # Weight gain explicit carb target path
         if goal_mode == "Weight gain" and carbs_g_per_kg_gain is not None:
-            carbs_g = weight_for_macros * float(carbs_g_per_kg_gain)
+            carbs_g = float(weight_for_macros) * float(carbs_g_per_kg_gain)
             kcal_carbs = carbs_g * 4
 
             fat_kcal = target_kcal - (kcal_protein + kcal_carbs)
             fat_g = fat_kcal / 9 if fat_kcal > 0 else 0.0
 
-            fat_min_g = 0.6 * weight_for_macros
-            fat_max_g = 1.0 * weight_for_macros
+            fat_min_g = 0.6 * float(weight_for_macros)
+            fat_max_g = 1.0 * float(weight_for_macros)
 
             if fat_g < fat_min_g:
                 fat_g = fat_min_g
@@ -930,10 +954,11 @@ def calculate_macros(
                 carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
             else:
                 kcal_fat = fat_g * 9
+
         else:
             if fat_mode == "Auto":
-                fat_min_g = 0.3 * weight_for_macros
-                fat_max_g = 1.5 * weight_for_macros
+                fat_min_g = 0.3 * float(weight_for_macros)
+                fat_max_g = 1.5 * float(weight_for_macros)
                 remaining_kcal_after_protein = max(target_kcal - kcal_protein, 0.0)
 
                 fat_g = min(max((remaining_kcal_after_protein * 0.35) / 9.0, fat_min_g), fat_max_g)
@@ -941,7 +966,7 @@ def calculate_macros(
                 kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0.0)
                 carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
             else:
-                fat_g = weight_for_macros * float(fat_g_per_kg_manual)
+                fat_g = float(weight_for_macros) * float(fat_g_per_kg_manual)
                 kcal_fat = fat_g * 9
                 kcal_carbs = max(target_kcal - (kcal_protein + kcal_fat), 0.0)
                 carbs_g = kcal_carbs / 4 if kcal_carbs > 0 else 0.0
@@ -1006,7 +1031,6 @@ def compute_mealtime_carb_targets(
             "Snack target (each)": 0,
         }
 
-    # Default: main meals get most carbs, snacks get remainder
     if style == "Same carbs each main meal (snacks flexible)":
         main_total = round(daily_carbs_g * 0.90)
         snacks_total = max(0, round(daily_carbs_g - main_total))
@@ -1030,9 +1054,7 @@ def compute_mealtime_carb_targets(
         "Main meal target (each)": int(round(per_main)),
         "Snack target (each)": int(round(per_snack)),
     }
-
-
-# ---------- DESSERT COUNT ENFORCEMENT (OPTIONAL RECOMMENDATION) ----------
+# ---------- DESSERT COUNT ENFORCEMENT ----------
 def count_desserts(plan_text: str) -> int:
     """
     Counts desserts based on a required tag in the meal description line.
@@ -1041,6 +1063,7 @@ def count_desserts(plan_text: str) -> int:
     if not plan_text:
         return 0
     return sum(1 for line in plan_text.splitlines() if line.strip().startswith("- ") and "[DESSERT]" in line)
+
 
 def build_dessert_fix_prompt(
     original_prompt: str,
@@ -1066,9 +1089,7 @@ def build_dessert_fix_prompt(
             f"{big_meals_per_day + snacks_per_day} ítems.\n"
             '- IMPORTANTE: la línea del postre DEBE incluir la etiqueta [POSTRE] en el texto del ítem.\n'
         )
-        tag_map_note = (
-            "NOTA: Si ves [DESSERT] en el texto, cámbialo por [POSTRE] en tu salida."
-        )
+        tag_map_note = "NOTA: Si ves [DESSERT] en el texto, cámbialo por [POSTRE] en tu salida."
     else:
         lang_rule = (
             "LANGUAGE REQUIREMENT: Respond entirely in English. Use ONLY ASCII '-' for bullets and numeric ranges."
@@ -1108,6 +1129,7 @@ Here is the current plan you must correct:
 --------------------
 """.strip()
 
+
 def maybe_fix_dessert_count_with_ai(
     original_prompt: str,
     plan_text: str,
@@ -1116,6 +1138,7 @@ def maybe_fix_dessert_count_with_ai(
     dessert_frequency: int,
     big_meals_per_day: int,
     snacks_per_day: int,
+    client: OpenAI,
 ) -> str:
     """
     Optional enforcement:
@@ -1129,7 +1152,6 @@ def maybe_fix_dessert_count_with_ai(
     if required <= 0:
         return plan_text
 
-    # Count based on language tag
     if language == "Spanish":
         have = sum(1 for line in plan_text.splitlines() if line.strip().startswith("- ") and "[POSTRE]" in line)
     else:
@@ -1165,19 +1187,15 @@ def maybe_fix_dessert_count_with_ai(
     return normalize_text_for_parsing(fixed)
 
 
-# ---------- OPTIONAL UPGRADE: CARB CONSISTENCY ENFORCEMENT (MEALTIME INSULIN MODE) ----------
+# ---------- OPTIONAL UPGRADE: CARB CONSISTENCY ENFORCEMENT ----------
 _MACROS_PREFIXES = ("Approx:", "Aproximado:", "Aprox:")
 _CARBS_IN_MACROS_RE = re.compile(r"\bC:\s*(?P<c>-?\d+(?:\.\d+)?)\s*g\b", flags=re.IGNORECASE)
+
 
 def _extract_plan_days_and_items(plan_text: str) -> List[Dict]:
     """
     Parses a strict-format plan into day blocks and items.
     Each item must be "- <label>: <desc>" followed by an Approx line.
-    Returns:
-      [
-        {"day": "Day 1", "items":[{"bullet": "...", "macros":"Approx: ..."} , ...]},
-        ...
-      ]
     """
     lines = plan_text.splitlines()
     days: List[Dict] = []
@@ -1257,9 +1275,7 @@ def _needs_carb_fix(
     expected_per_day = max(1, int(big_meals_per_day) + int(snacks_per_day))
 
     for d in days:
-        items = d.get("items", []) or []
-        # Only consider up to expected_per_day in case model added/removed (shouldn't, but safety)
-        items = items[:expected_per_day]
+        items = (d.get("items", []) or [])[:expected_per_day]
         for idx, it in enumerate(items):
             total_items += 1
             c = _carb_from_macros_line(it.get("macros", ""))
@@ -1272,12 +1288,10 @@ def _needs_carb_fix(
                 if abs(c - float(target_main)) > float(tol_main):
                     out_of_range += 1
             else:
-                # snacks
                 if int(snacks_per_day) > 0:
                     if abs(c - float(target_snack)) > float(tol_snack):
                         out_of_range += 1
 
-    # If too many macros lines are unparsable, we can't reliably enforce
     if total_items > 0 and (parsed_items / total_items) < 0.80:
         return True
 
@@ -1328,7 +1342,7 @@ REGLAS ESTRICTAS:
         carb_rule = f"""
 CARB CONSISTENCY TARGET (MEALTIME INSULIN SUPPORT):
 - This plan does NOT calculate insulin doses and is NOT intended to guide insulin dosing.
-- The goal is predictable carbohydrates per meal so the patient can anticipate their usual bolus needs (based on their individualized plan).
+- The goal is predictable carbohydrates per meal so the patient can anticipate their usual bolus needs (based on their individualized clinical plan).
 - {icr_line}
 
 STRICT RULES:
@@ -1375,6 +1389,7 @@ def maybe_fix_carb_consistency_with_ai(
     target_main: int,
     target_snack: int,
     icr_str: Optional[str],
+    client: OpenAI,
     tol_main: int = 5,
     tol_snack: int = 5,
 ) -> str:
@@ -1385,7 +1400,6 @@ def maybe_fix_carb_consistency_with_ai(
     """
     if not enable_mealtime_insulin_mode:
         return plan_text
-
     if big_meals_per_day <= 0:
         return plan_text
 
@@ -1398,7 +1412,6 @@ def maybe_fix_carb_consistency_with_ai(
         tol_main=tol_main,
         tol_snack=tol_snack,
     )
-
     if not needs_fix:
         return plan_text
 
@@ -1456,18 +1469,14 @@ def build_mealplan_prompt(
     meal_prep_style: str,
     avg_prep_minutes: int,
     cooking_skill: str,
-
     include_dessert: bool,
     dessert_frequency: int,
     dessert_style: str,
-
-    # NEW: mealtime insulin support (Diabetic only)
     uses_mealtime_insulin: bool,
     insulin_to_carb_ratio: Optional[str],
     carb_distribution_style: Optional[str],
-    # One restaurant rule 
     one_restaurant_per_day: bool,
-):
+) -> str:
     if language == "Spanish":
         lang_note = (
             "REQUISITO DE IDIOMA (OBLIGATORIO):\n"
@@ -1680,7 +1689,6 @@ CLINICAL DIET PATTERN: Renal diet for ESRD or CKD stage 4-5 (general guidance, n
 - Prefer lower-potassium fruits and vegetables and simple home-cooked meals over restaurant / fast-food when possible.
 """
 
-    # NEW: Mealtime insulin support note (Diabetic only)
     mealtime_insulin_note = ""
     if diet_pattern == "Diabetic" and bool(uses_mealtime_insulin):
         style = carb_distribution_style or "Same carbs each main meal (snacks flexible)"
@@ -1721,13 +1729,13 @@ MEALTIME INSULIN (BOLUS) SUPPORT - CARB CONSISTENCY:
 - STRICT RULE: Keep carbs for each main meal within that range. Do not “shift” carbs between meals to compensate.
 """.strip()
 
-fast_food_note = ""
-if fast_food_chains and fast_food_percent > 0:
-    chains_txt = ", ".join(fast_food_chains)
+    fast_food_note = ""
+    if fast_food_chains and fast_food_percent > 0:
+        chains_txt = ", ".join(fast_food_chains)
 
-    one_chain_rule = ""
-    if one_restaurant_per_day:
-        one_chain_rule = """
+        one_chain_rule = ""
+        if one_restaurant_per_day:
+            one_chain_rule = """
 ONE-RESTAURANT-PER-DAY RULE (MANDATORY):
 - If a given day includes ANY restaurant/fast-food items, then ALL restaurant items that day must be from ONE single chain only.
 - It is NOT allowed to use Restaurant A for a meal and Restaurant B for a snack on the same day.
@@ -1735,7 +1743,7 @@ ONE-RESTAURANT-PER-DAY RULE (MANDATORY):
   OR it must be a non-restaurant snack (grocery/home item) with no restaurant name.
 """.strip()
 
-    fast_food_note = f"""
+        fast_food_note = f"""
 FAST-FOOD / TAKEOUT PATTERN (REAL MENU ITEMS ONLY):
 - Patient is okay with using some meals from these fast-food chains: {chains_txt}.
 - Aim for roughly {fast_food_percent}% of total weekly meals to be from fast-food or takeout.
@@ -1746,7 +1754,7 @@ FAST-FOOD / TAKEOUT PATTERN (REAL MENU ITEMS ONLY):
 {one_chain_rule}
 """.strip()
 
-meal_timing_note = f"""
+    meal_timing_note = f"""
 MEAL TIMING PREFERENCES:
 - Target {big_meals_per_day} main meal(s) and {snacks_per_day} snack time(s) per day.
 - Main meals should contain the majority of daily calories and protein.
@@ -1813,7 +1821,7 @@ All calorie estimates, macro calculations, and portion recommendations in this p
 Meals may be prepared in larger quantities to feed the household ({household_size} people), but macros apply only to the primary individual's portion.
 """
 
-    two_week_budget = weekly_budget * 2.0
+    two_week_budget = float(weekly_budget) * 2.0
     pricing_note = f"""
 PRICING AND GROCERY COST (ESTIMATES ONLY):
 - All prices are approximate and must NOT use real-time data from any retailer or restaurant.
@@ -1840,7 +1848,6 @@ Rules:
 """.strip()
 
     dessert_note = ""
-    # Dessert is for enjoyment; not “high-protein strict”.
     if include_dessert and int(dessert_frequency or 0) > 0:
         if language == "Spanish":
             dessert_note = f"""
@@ -1985,16 +1992,14 @@ def generate_meal_plan_with_ai(
     meal_prep_style: str,
     avg_prep_minutes: int,
     cooking_skill: str,
-
     include_dessert: bool,
     dessert_frequency: int,
     dessert_style: str,
-
-    # NEW
     one_restaurant_per_day: bool,
     uses_mealtime_insulin: bool,
     insulin_to_carb_ratio: Optional[str],
     carb_distribution_style: Optional[str],
+    client: OpenAI,
 ) -> Tuple[str, str]:
     prompt = build_mealplan_prompt(
         macros=macros,
@@ -2022,7 +2027,6 @@ def generate_meal_plan_with_ai(
         include_dessert=include_dessert,
         dessert_frequency=int(dessert_frequency or 0),
         dessert_style=str(dessert_style),
-    
         uses_mealtime_insulin=bool(uses_mealtime_insulin),
         insulin_to_carb_ratio=insulin_to_carb_ratio,
         carb_distribution_style=carb_distribution_style,
@@ -2047,10 +2051,10 @@ def generate_meal_plan_with_ai(
     return normalize_text_for_parsing(raw_text), prompt
 
 
-# ---------- PDF GENERATION (UNCHANGED) ----------
+# ---------- PDF GENERATION ----------
 def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
     """
-    Your PDF function (unchanged).
+    Generates a PDF from plain text with a Day-by-Day table layout + leftover sections.
     """
     from io import BytesIO
     from reportlab.lib.pagesizes import letter
@@ -2086,7 +2090,7 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
         words = text_line.split()
         if not words:
             return [""]
-        lines = []
+        lines_out = []
         current = words[0]
         for word in words[1:]:
             test = current + " " + word
@@ -2094,13 +2098,13 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
             if w <= max_width:
                 current = test
             else:
-                lines.append(current)
+                lines_out.append(current)
                 current = word
-        lines.append(current)
-        return lines
+        lines_out.append(current)
+        return lines_out
 
-    def parse_days_and_meals(text: str):
-        lines = text.splitlines()
+    def parse_days_and_meals(text_in: str):
+        lines = text_in.splitlines()
         used_indices = set()
 
         days = []
@@ -2300,7 +2304,7 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
 
         for raw_line in leftover_lines:
             wrapped_lines = wrap_text(raw_line, body_font, body_size, usable_width)
-            for line in wrapped_lines:
+            for w in wrapped_lines:
                 if text_obj.getY() <= bottom_margin:
                     c.drawText(text_obj)
                     current_y = new_page_with_title()
@@ -2308,7 +2312,7 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
                     text_obj.setTextOrigin(left_margin, current_y)
                     text_obj.setFont(body_font, body_size)
                     text_obj.setLeading(body_leading)
-                text_obj.textLine(line)
+                text_obj.textLine(w)
 
         c.drawText(text_obj)
         current_y = text_obj.getY()
@@ -2370,43 +2374,31 @@ def create_pdf_from_text(text: str, title: str = "Meal Plan") -> bytes:
 # ---------- STREAMLIT UI ----------
 def main():
     st.set_page_config(page_title="Evidence-Based Macro & Meal Planner", layout="centered")
+    client = get_openai_client()
 
     st.title("Personalized Meal Planning for the busy clinician")
     st.write("Enter metrics and personal preferences below")
 
     # Initialize session state
-    if "protein_g_per_kg" not in st.session_state:
-        st.session_state["protein_g_per_kg"] = 1.4
-    if "fat_g_per_kg" not in st.session_state:
-        st.session_state["fat_g_per_kg"] = 0.7
-    if "using_glp1" not in st.session_state:
-        st.session_state["using_glp1"] = False
+    st.session_state.setdefault("protein_g_per_kg", 1.4)
+    st.session_state.setdefault("fat_g_per_kg", 0.7)
+    st.session_state.setdefault("using_glp1", False)
 
     # Defaults for carb-cap + fat mode
-    if "enable_carb_cap" not in st.session_state:
-        st.session_state["enable_carb_cap"] = False
-    if "carbs_g_per_kg_cap" not in st.session_state:
-        st.session_state["carbs_g_per_kg_cap"] = 1.2
-    if "carb_cap_basis" not in st.session_state:
-        st.session_state["carb_cap_basis"] = "Current"
-    if "fat_mode" not in st.session_state:
-        st.session_state["fat_mode"] = "Manual"
+    st.session_state.setdefault("enable_carb_cap", False)
+    st.session_state.setdefault("carbs_g_per_kg_cap", 1.2)
+    st.session_state.setdefault("carb_cap_basis", "Current")
+    st.session_state.setdefault("fat_mode", "Manual")
 
     # Diabetic guidance state
-    if "diabetic_carb_mode" not in st.session_state:
-        st.session_state["diabetic_carb_mode"] = True
-    if "a1c_band" not in st.session_state:
-        st.session_state["a1c_band"] = "T2DM near goal (A1C 6.5-6.9%)"
+    st.session_state.setdefault("diabetic_carb_mode", True)
+    st.session_state.setdefault("a1c_band", "T2DM near goal (A1C 6.5-6.9%)")
 
-    # NEW: Mealtime insulin state
-    if "uses_mealtime_insulin" not in st.session_state:
-        st.session_state["uses_mealtime_insulin"] = False
-    if "insulin_to_carb_ratio" not in st.session_state:
-        st.session_state["insulin_to_carb_ratio"] = "1:10"
-    if "carb_distribution_style" not in st.session_state:
-        st.session_state["carb_distribution_style"] = "Same carbs each main meal (snacks flexible)"
+    # Mealtime insulin state
+    st.session_state.setdefault("uses_mealtime_insulin", False)
+    st.session_state.setdefault("insulin_to_carb_ratio", "1:10")
+    st.session_state.setdefault("carb_distribution_style", "Same carbs each main meal (snacks flexible)")
 
-    # A1C-based guidance bands
     IR_BANDS = {
         "Normal / no IR (A1C < 5.7%)": {"cap": 3.0, "default": 2.5, "min": 2.0, "max": 3.0},
         "Prediabetes / mild IR (A1C 5.7-6.4%)": {"cap": 2.5, "default": 2.0, "min": 1.5, "max": 2.5},
@@ -2415,7 +2407,6 @@ def main():
         "T2DM very high (A1C >= 8.5%)": {"cap": 1.0, "default": 0.9, "min": 0.5, "max": 1.0},
     }
 
-    # 0) MODE SELECTOR
     goal_mode: GoalMode = st.selectbox(
         "Mode",
         options=["Weight loss", "Maintenance", "Weight gain"],
@@ -2423,7 +2414,6 @@ def main():
         help="Select weight loss, maintenance, or weight gain."
     )
 
-    # 1) Patient / User Info
     st.subheader("1. Patient / User Info")
     col1, col2 = st.columns(2)
 
@@ -2453,9 +2443,8 @@ def main():
             st.caption(f"Current weight: {weight_current_kg:.1f} kg\nGoal weight: {weight_goal_kg:.1f} kg")
 
         weight_source = st.selectbox("Weight used for macros", options=["Current", "Goal"])
-    
-    st.subheader("Optional: Body composition (for more accurate bulking TDEE)")
 
+    st.subheader("Optional: Body composition (for more accurate bulking TDEE)")
     rmr_method = st.selectbox(
         "RMR method",
         options=["Auto", "Mifflin", "Katch-McArdle"],
@@ -2473,24 +2462,15 @@ def main():
     lean_mass_kg = None
 
     if body_comp_mode == "Body fat %":
-        bodyfat_percent = st.number_input(
-            "Body fat %",
-            min_value=3.0,
-            max_value=60.0,
-            value=20.0,
-            step=0.5
-        )
+        bodyfat_percent = st.number_input("Body fat %", min_value=3.0, max_value=60.0, value=20.0, step=0.5)
         st.caption("Used to estimate fat-free mass and apply Katch-McArdle if selected/Auto.")
-
     elif body_comp_mode == "Lean mass (FFM)":
         lm_unit = st.radio("Lean mass units", options=["kg", "lb"], index=0, horizontal=True)
         lm_val = st.number_input("Lean mass", min_value=20.0, max_value=250.0, value=55.0, step=1.0)
         lean_mass_kg = lm_val if lm_unit == "kg" else lm_val / 2.20462
         st.caption(f"Lean mass used: {lean_mass_kg:.1f} kg")
 
-    # 2) Activity & Maintenance Settings
     st.subheader("2. Activity & Maintenance Settings")
-
     colA, colB = st.columns([10, 1])
     with colA:
         activity_factor = st.number_input(
@@ -2501,7 +2481,6 @@ def main():
             step=0.025,
             help="Click the question mark for a detailed activity reference table."
         )
-
     with colB:
         with st.popover("❓"):
             activity_factor_reference_table()
@@ -2544,11 +2523,7 @@ def main():
         )
         est_gain_kg_per_week = (surplus_kcal * 7) / 7700.0
         st.caption(f"Estimated gain from surplus: ~{est_gain_kg_per_week:.2f} kg/week (rough estimate).")
-        min_gain = float(weight_current_kg) * 0.0025
-        max_gain = float(weight_current_kg) * 0.005
-        st.caption(f"Recommended gain range: ~{min_gain:.2f} to {max_gain:.2f} kg/week (0.25-0.5% BW/week).")
 
-    # 5) Clinical diet pattern
     st.subheader("5. Clinical diet pattern (optional)")
     diet_pattern = st.selectbox(
         "Apply a medical diet template",
@@ -2567,14 +2542,12 @@ def main():
             help="Typical CHF fluid restriction is around 1.5-2.0 L/day; adjust per patient."
         )
 
-    # Diabetic guidance panel (A1C bands) + Mealtime insulin support
     uses_mealtime_insulin = False
     insulin_to_carb_ratio = None
     carb_distribution_style = None
 
     if diet_pattern == "Diabetic":
         st.markdown("### Diabetic carb guidance (A1C-based, optional)")
-
         diabetic_carb_mode = st.toggle(
             "Use A1C-based carb guidance (suggests carb range + recommended cap)",
             value=bool(st.session_state["diabetic_carb_mode"]),
@@ -2588,7 +2561,6 @@ def main():
                 options=list(IR_BANDS.keys()),
                 index=list(IR_BANDS.keys()).index(st.session_state["a1c_band"])
                 if st.session_state["a1c_band"] in IR_BANDS else 2,
-                help="Normal <5.7, Prediabetes 5.7-6.4, Diabetes >=6.5. Within diabetes, these are guidance buckets."
             )
             st.session_state["a1c_band"] = a1c_band
 
@@ -2597,9 +2569,7 @@ def main():
             if st.session_state.get("fat_mode") != "Auto":
                 st.session_state["fat_mode"] = "Auto"
 
-        # NEW: Mealtime insulin / carb consistency controls
         st.markdown("### Mealtime insulin support (carb consistency)")
-
         uses_mealtime_insulin = st.toggle(
             "Uses mealtime insulin (bolus) - enforce consistent carbs per meal",
             value=bool(st.session_state.get("uses_mealtime_insulin", False)),
@@ -2608,14 +2578,12 @@ def main():
         st.session_state["uses_mealtime_insulin"] = bool(uses_mealtime_insulin)
 
         icr_options = ["1:15", "1:12", "1:10", "1:8", "1:5"]
-
         if uses_mealtime_insulin:
             insulin_to_carb_ratio = st.selectbox(
                 "Insulin-to-carb ratio (ICR) (for reference only)",
                 options=icr_options,
                 index=icr_options.index(st.session_state.get("insulin_to_carb_ratio", "1:10"))
                 if st.session_state.get("insulin_to_carb_ratio", "1:10") in icr_options else 2,
-                help="Shown so carbs per meal can be consistent. The plan does NOT compute insulin doses."
             )
             st.session_state["insulin_to_carb_ratio"] = insulin_to_carb_ratio
 
@@ -2630,14 +2598,12 @@ def main():
                 if st.session_state.get("carb_distribution_style") == "Same carbs each main meal (snacks flexible)"
                 else 1 if st.session_state.get("carb_distribution_style") == "Same carbs breakfast/lunch/dinner and consistent snacks"
                 else 2,
-                help="Controls how tightly carbs are held constant across meals."
             )
             st.session_state["carb_distribution_style"] = carb_distribution_style
 
             st.info(
                 "Clinician-oriented note: This feature enforces consistent carbohydrates per meal. "
-                "It does NOT provide insulin dosing instructions and is NOT intended to guide insulin dosing. "
-                "ICR and dosing decisions are individualized and determined by the treating clinician."
+                "It does NOT provide insulin dosing instructions and is NOT intended to guide insulin dosing."
             )
 
     glp1_help = (
@@ -2650,40 +2616,28 @@ def main():
         "- Exenatide (Byetta®, Bydureon®)\n"
         "- Lixisenatide (Adlyxin®)\n"
     )
-
     using_glp1 = st.checkbox(
         "Using a GLP-1 receptor agonist (GLP-1RA)",
         key="using_glp1",
         help=glp1_help
     )
 
-    if using_glp1:
-        if st.session_state["protein_g_per_kg"] < 1.6:
-            st.session_state["protein_g_per_kg"] = 1.6
+    if using_glp1 and st.session_state["protein_g_per_kg"] < 1.6:
+        st.session_state["protein_g_per_kg"] = 1.6
 
-    # 3) Macro Settings
     st.subheader("3. Macro Settings (priority mode + toggles)")
-
     if using_glp1:
-        protein_min = 1.6
-        protein_max = 2.0
+        protein_min, protein_max = 1.6, 2.0
         protein_help = "GLP-1RA selected: protein min 1.6 g/kg, adjustable up to 2.0 g/kg."
     else:
-        protein_min = 0.8
-        protein_max = 2.5
-        if goal_mode == "Weight gain":
-            protein_help = "Weight gain: typical evidence-based range 1.6-2.2 g/kg/day."
-        elif goal_mode == "Maintenance":
-            protein_help = "Maintenance: choose a reasonable protein target; adjust for training."
-        else:
-            protein_help = "Weight loss: common evidence-supported range 1.2-1.6 g/kg (higher can be ok)."
+        protein_min, protein_max = 0.8, 2.5
+        protein_help = "Weight loss: common range 1.2-1.6 g/kg (higher can be ok)."
 
     carb_col, carb_q = st.columns([10, 1])
     with carb_col:
         enable_carb_cap = st.checkbox(
             "Enable carbohydrate target/cap (g/kg/day) and prioritize carbs -> protein -> fat remainder",
             value=bool(st.session_state["enable_carb_cap"]),
-            help="If enabled, carbs are set first (g/kg cap), protein is set next, and fat becomes the remainder."
         )
         st.session_state["enable_carb_cap"] = bool(enable_carb_cap)
 
@@ -2699,7 +2653,6 @@ def main():
             "Carb cap is based on which body weight?",
             options=["Current", "Macro weight"],
             index=0 if st.session_state.get("carb_cap_basis", "Current") == "Current" else 1,
-            help="Many clinicians prefer carb caps based on CURRENT weight. Macro weight uses your selected macro weight source."
         )
         st.session_state["carb_cap_basis"] = carb_cap_basis
 
@@ -2709,7 +2662,6 @@ def main():
             band_cfg = IR_BANDS.get(band, {"min": 1.0, "max": 2.0, "default": 1.5, "cap": 2.0})
             cmin, cmax, cdef = float(band_cfg["min"]), float(band_cfg["max"]), float(band_cfg["default"])
             recommended_cap = float(band_cfg["cap"])
-
             st.caption(f"A1C band selected: **{band}**. Recommended carb cap: **{recommended_cap:.1f} g/kg/day**.")
 
             carbs_g_per_kg_cap = st.slider(
@@ -2718,39 +2670,17 @@ def main():
                 max_value=float(cmax),
                 value=float(st.session_state.get("carbs_g_per_kg_cap", cdef)),
                 step=0.1,
-                help="Carbs are set first to this cap (based on selected weight basis)."
             )
         else:
-            ir_level = st.selectbox(
-                "Insulin resistance level (guides carb g/kg range)",
-                options=["Low / none", "Moderate", "High", "Very high / uncontrolled"],
-                index=1,
-                help="Sets a sensible g/kg range; you can still choose the exact cap."
-            )
-
-            if ir_level == "Low / none":
-                cmin, cmax, cdef = 1.5, 2.5, 2.0
-            elif ir_level == "Moderate":
-                cmin, cmax, cdef = 1.0, 1.8, 1.4
-            elif ir_level == "High":
-                cmin, cmax, cdef = 0.8, 1.2, 1.0
-            else:
-                cmin, cmax, cdef = 0.5, 1.0, 0.8
-
-            if diet_pattern != "Diabetic":
-                cmin = max(0.3, cmin)
-                cmax = max(cmax, 2.5)
-
             carbs_g_per_kg_cap = st.slider(
                 "Carbohydrate cap (g/kg/day)",
-                min_value=float(cmin),
-                max_value=float(cmax),
-                value=float(st.session_state.get("carbs_g_per_kg_cap", cdef)),
+                min_value=0.5,
+                max_value=3.0,
+                value=float(st.session_state.get("carbs_g_per_kg_cap", 1.2)),
                 step=0.1,
-                help="Carbs are set first to this cap (based on selected weight basis)."
             )
 
-        st.session_state["carbs_g_per_kg_cap"] = float(carbs_g_per_kg_cap) if carbs_g_per_kg_cap is not None else st.session_state["carbs_g_per_kg_cap"]
+        st.session_state["carbs_g_per_kg_cap"] = float(carbs_g_per_kg_cap)
 
         if recommended_cap is not None and carbs_g_per_kg_cap is not None and float(carbs_g_per_kg_cap) > float(recommended_cap):
             st.warning(f"Selected carbs exceed the recommended cap for this A1C band ({recommended_cap:.1f} g/kg/day).")
@@ -2759,7 +2689,6 @@ def main():
         "Fat setting",
         options=["Auto", "Manual"],
         index=0 if st.session_state.get("fat_mode", "Manual") == "Auto" else 1,
-        help="Auto = fat becomes the remainder after carbs cap + protein. Manual = you set fat g/kg and carbs are remainder."
     )
     st.session_state["fat_mode"] = fat_mode
 
@@ -2778,14 +2707,12 @@ def main():
     fat_g_per_kg_manual = float(st.session_state.get("fat_g_per_kg", 0.7))
     with col4:
         if fat_mode == "Manual":
-            fat_help = "Manual fat g/kg. Carbs become the remainder to hit calories."
             fat_g_per_kg_manual = st.number_input(
                 "Fat (g/kg for macro weight)",
                 min_value=0.3,
                 max_value=1.5,
                 value=float(st.session_state.get("fat_g_per_kg", 0.7)),
                 step=0.1,
-                help=fat_help,
             )
             st.session_state["fat_g_per_kg"] = float(fat_g_per_kg_manual)
         else:
@@ -2798,7 +2725,6 @@ def main():
             "Training volume (for desired carb target)",
             options=["Moderate (3–4 days/week)", "High volume (5–6 days/week)"],
             index=0,
-            help="Sets a DESIRED carbohydrate g/kg target to support training performance."
         )
 
         if training_volume.startswith("Moderate"):
@@ -2814,16 +2740,12 @@ def main():
             max_value=float(carbs_max),
             value=float(default_carbs_gkg),
             step=0.1,
-            help="If carb-cap priority mode is enabled, this becomes the desired target but will be capped."
         )
 
-    # 4) Preferences for AI Meal Plan
     st.subheader("4. Preferences for AI Meal Plan")
-
     allergies = st.text_input("Allergies (comma-separated)", placeholder="e.g., peanuts, shellfish")
     dislikes = st.text_input("Foods to avoid / dislikes", placeholder="e.g., mushrooms, cilantro")
 
-    # NEW: must-include foods
     must_include_foods = st.text_input(
         "Foods to INCLUDE / must-have favorites (comma-separated)",
         placeholder="e.g., Greek yogurt, salmon, oats, tortillas, berries"
@@ -2836,25 +2758,13 @@ def main():
             "Include at least once in 14 days",
         ],
         index=1,
-        help="Helps the AI balance preferences with budget and medical diet constraints."
     )
 
-    # NEW: dessert option (enjoyment, not strict)
-    include_dessert = st.checkbox(
-        "Include an occasional dessert (for enjoyment)",
-        value=False,
-        help="Adds a dessert a couple times per week while still keeping the overall plan reasonable."
-    )
-
+    include_dessert = st.checkbox("Include an occasional dessert (for enjoyment)", value=False)
     dessert_frequency = 0
     dessert_style = "Balanced / anything enjoyable"
     if include_dessert:
-        dessert_frequency = st.selectbox(
-            "Dessert frequency (over 14 days)",
-            options=[2, 4, 6, 8],
-            index=1,  # default 4 (about twice per week)
-            help="4 = about twice per week. Desserts will be portion-controlled and counted in macros."
-        )
+        dessert_frequency = st.selectbox("Dessert frequency (over 14 days)", options=[2, 4, 6, 8], index=1)
         dessert_style = st.selectbox(
             "Dessert style",
             options=[
@@ -2875,26 +2785,10 @@ def main():
         step=10.0,
     )
 
-    language = st.selectbox(
-        "Meal plan language",
-        options=["English", "Spanish"],
-        help="Choose the language for the generated meal plan."
-    )
+    language = st.selectbox("Meal plan language", options=["English", "Spanish"])
 
-    st.info(
-        "💲 **Price Disclaimer:** All grocery prices in the generated meal plan are estimates only.\n"
-        "They do not reflect real-time pricing from Walmart, H-E-B, Costco, or any other retailer.\n"
-        "Real-time pricing will be added once API access is approved."
-    )
-
-    # 6) Fast-food options
     st.subheader("6. Fast-food options (optional)")
-
-    include_fast_food = st.checkbox(
-        "Allow some meals from fast-food restaurants",
-        value=False,
-        help="The plan will still try to hit macros and any medical diet constraints."
-    )
+    include_fast_food = st.checkbox("Allow some meals from fast-food restaurants", value=False)
 
     fast_food_chains = []
     if include_fast_food:
@@ -2913,38 +2807,21 @@ def main():
                 "Wienerschnitzel", "Nathan's Famous", "Dairy Queen", "Baskin Robbins", "Cold Stone Creamery",
                 "Ben & Jerry's", "Panda Express", "Arby's", "Shake Shack", "Noodles & Company", "Jollibee",
             ],
-            help="The AI can substitute some meals with items from these places."
         )
 
     fast_food_percent = 0
     one_restaurant_per_day = False
     if include_fast_food:
-        fast_food_percent = st.slider(
-            "About what % of weekly meals can be fast-food / takeout?",
-            min_value=10,
-            max_value=80,
-            step=10,
-            value=20,
-            help="This is a rough target; the plan will approximate this share of meals."
-        )
-        
-        one_restaurant_per_day = st.checkbox(
-            "When fast-food is used, restrict to ONE restaurant per day",
-            value=True,
-            help="If a day includes restaurant items, all restaurant items that day must be from the same chain."
-        )
+        fast_food_percent = st.slider("About what % of weekly meals can be fast-food / takeout?", 10, 80, 20, 10)
+        one_restaurant_per_day = st.checkbox("When fast-food is used, restrict to ONE restaurant per day", value=True)
 
-    # 7) Meal timing
     st.subheader("7. Meal timing (optional)")
     big_meals_per_day = st.selectbox("Number of main meals per day", options=[1, 2, 3], index=2)
     snacks_per_day = st.selectbox("Number of snack times per day", options=[0, 1, 2, 3], index=2)
-
-    # Dessert needs snack slots; auto-adjust if user picked 0 snacks
     if include_dessert and snacks_per_day == 0:
         st.warning("Desserts are added as snack items. Snacks/day was set to 0, so snacks/day will be treated as 1 for planning.")
         snacks_per_day = 1
 
-    # 8) Cooking vs premade balance
     st.subheader("8. Cooking vs premade balance")
     prep_style = st.selectbox(
         "Preferred style",
@@ -2955,7 +2832,6 @@ def main():
         ],
     )
 
-    # 8b) Time available + skill level
     st.subheader("8b. Time available to meal prep (optional)")
     avg_prep_minutes = st.number_input(
         "Average time you can spend cooking/prepping per main meal (minutes)",
@@ -2963,25 +2839,20 @@ def main():
         max_value=120,
         value=20,
         step=10,
-        help="Use 0 for 'no-cook / microwave only'. This is a guide, not a strict limit."
     )
 
     cooking_skill = st.selectbox(
         "Cooking skill level",
         options=["Beginner (needs instructions)", "Intermediate", "Advanced"],
         index=0,
-        help="Beginner will trigger simple instructions for only the more complex meals at the end."
     )
 
-    # 9) Household / family planning
     st.subheader("9. Household / family planning")
     household_size = st.number_input(
         "How many people will be eating most of these meals?",
         min_value=1, max_value=10, value=1, step=1,
-        help="Macros/calorie targets remain for ONE primary individual; quantities scaled for household."
     )
 
-    # 10) Variety vs meal prep style
     st.subheader("10. Variety vs meal prep style")
     meal_prep_style = st.selectbox(
         "How should the plan handle variety?",
@@ -3005,14 +2876,11 @@ def main():
             use_estimated_maintenance=use_estimated_maintenance,
             maintenance_kcal_known=maintenance_kcal_known,
             surplus_kcal=surplus_kcal if goal_mode == "Weight gain" else 0.0,
-
             protein_g_per_kg=float(st.session_state["protein_g_per_kg"]),
-
             carbs_g_per_kg_cap=float(carbs_g_per_kg_cap) if (enable_carb_cap and carbs_g_per_kg_cap is not None) else None,
             carb_cap_basis=carb_cap_basis,
             fat_mode="Auto" if fat_mode == "Auto" else "Manual",
             fat_g_per_kg_manual=float(fat_g_per_kg_manual),
-
             carbs_g_per_kg_gain=carbs_g_per_kg_gain,
             rmr_method=rmr_method,
             bodyfat_percent=bodyfat_percent,
@@ -3020,7 +2888,6 @@ def main():
         )
 
         st.success("Calculated macros successfully.")
-
         st.subheader("Calculated Energy and Macros")
         colA, colB = st.columns(2)
         with colA:
@@ -3060,7 +2927,6 @@ def main():
                     meal_prep_style=meal_prep_style,
                     avg_prep_minutes=int(avg_prep_minutes),
                     cooking_skill=str(cooking_skill),
-
                     include_dessert=include_dessert,
                     dessert_frequency=int(dessert_frequency or 0),
                     dessert_style=str(dessert_style),
@@ -3068,6 +2934,7 @@ def main():
                     uses_mealtime_insulin=bool(uses_mealtime_insulin),
                     insulin_to_carb_ratio=insulin_to_carb_ratio,
                     carb_distribution_style=carb_distribution_style,
+                    client=client,
                 )
 
                 clean_text = normalize_text_for_parsing(plan_text_raw)
@@ -3078,7 +2945,6 @@ def main():
                 if language == "Spanish":
                     clean_text = enforce_spanish_meal_labels(clean_text)
 
-                # OPTIONAL UPGRADE: enforce carb-per-meal consistency (one corrective pass max)
                 if diet_pattern == "Diabetic" and bool(uses_mealtime_insulin):
                     targets = compute_mealtime_carb_targets(
                         daily_carbs_g=float(macros.carbs_g),
@@ -3088,7 +2954,6 @@ def main():
                     )
                     target_main = int(targets.get("Main meal target (each)", 0))
                     target_snack = int(targets.get("Snack target (each)", 0))
-                    # For snacks_per_day==0, target_snack is irrelevant, but harmless
                     clean_text = maybe_fix_carb_consistency_with_ai(
                         original_prompt=original_prompt,
                         plan_text=clean_text,
@@ -3099,11 +2964,10 @@ def main():
                         target_main=target_main,
                         target_snack=target_snack,
                         icr_str=insulin_to_carb_ratio,
+                        client=client,
                         tol_main=5,
                         tol_snack=5,
                     )
-
-                    # Re-run sanitizers after carb-fix pass (safe)
                     clean_text = normalize_text_for_parsing(clean_text)
                     clean_text = add_section_spacing(clean_text)
                     clean_text = add_recipe_spacing_and_dividers(clean_text, divider_len=48)
@@ -3112,8 +2976,6 @@ def main():
                     if language == "Spanish":
                         clean_text = enforce_spanish_meal_labels(clean_text)
 
-
-                # OPTIONAL: enforce dessert count (one corrective pass max)
                 clean_text = maybe_fix_dessert_count_with_ai(
                     original_prompt=original_prompt,
                     plan_text=clean_text,
@@ -3122,9 +2984,8 @@ def main():
                     dessert_frequency=int(dessert_frequency or 0),
                     big_meals_per_day=big_meals_per_day,
                     snacks_per_day=snacks_per_day,
+                    client=client,
                 )
-
-                # Re-run sanitizers after dessert fix pass (safe)
                 clean_text = normalize_text_for_parsing(clean_text)
                 clean_text = add_section_spacing(clean_text)
                 clean_text = add_recipe_spacing_and_dividers(clean_text, divider_len=48)
@@ -3132,8 +2993,7 @@ def main():
                 clean_text = sanitize_and_rebalance_macro_lines(clean_text)
                 if language == "Spanish":
                     clean_text = enforce_spanish_meal_labels(clean_text)
-                    
-                # OPTIONAL: enforce ONE-RESTAURANT-PER-DAY (one corrective pass max)
+
                 clean_text = maybe_fix_one_restaurant_per_day_with_ai(
                     original_prompt=original_prompt,
                     plan_text=clean_text,
@@ -3142,9 +3002,8 @@ def main():
                     big_meals_per_day=big_meals_per_day,
                     snacks_per_day=snacks_per_day,
                     allowed_chains=fast_food_chains,
+                    client=client,
                 )
-                
-                # Re-run sanitizers after restaurant fix pass (safe)
                 clean_text = normalize_text_for_parsing(clean_text)
                 clean_text = add_section_spacing(clean_text)
                 clean_text = add_recipe_spacing_and_dividers(clean_text, divider_len=48)
@@ -3180,8 +3039,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
