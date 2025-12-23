@@ -2433,11 +2433,11 @@ def main():
     with col2:
         weight_unit = st.radio("Weight units", options=["kg", "lbs"], index=1, horizontal=True)
         if weight_unit == "kg":
-            weight_current_kg = st.number_input("Current weight (kg)", min_value=30.0, max_value=300.0, value=70.0)
-            weight_goal_kg = st.number_input("Goal weight (kg)", min_value=30.0, max_value=300.0, value=65.0)
+            weight_current_kg = st.number_input("Current weight (kg)", min_value=30.0, max_value=300.0, value=70.0, step=1.0)
+            weight_goal_kg = st.number_input("Goal weight (kg)", min_value=30.0, max_value=300.0, value=65.0, step=1.0)
         else:
-            weight_current_lbs = st.number_input("Current weight (lbs)", min_value=60.0, max_value=660.0, value=154.0)
-            weight_goal_lbs = st.number_input("Goal weight (lbs)", min_value=60.0, max_value=660.0, value=143.0)
+            weight_current_lbs = st.number_input("Current weight (lbs)", min_value=60.0, max_value=660.0, value=154.0, step=1.0)
+            weight_goal_lbs = st.number_input("Goal weight (lbs)", min_value=60.0, max_value=660.0, value=143.0, step=1.0)
             weight_current_kg = weight_current_lbs / 2.20462
             weight_goal_kg = weight_goal_lbs / 2.20462
             st.caption(f"Current weight: {weight_current_kg:.1f} kg\nGoal weight: {weight_goal_kg:.1f} kg")
@@ -3039,3 +3039,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
